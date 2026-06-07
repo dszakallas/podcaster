@@ -173,26 +173,35 @@ def init_podcast_notebook(title, podcast_dir, verbose):
 
 @cli.command(name="create-podcast")
 @click.argument('title')
-@click.option('--source-file', required=True, help='Path to the source file to upload')
+@click.option('--source-file', help='Path to the source file to upload (required if --source-id not given)')
+@click.option('--notebook-id', help='Existing NotebookLM notebook ID')
+@click.option('--source-id', help='Existing NotebookLM source ID')
 @click.option('--length', type=click.Choice(['short', 'default', 'long']), help='Target length (default from config)')
 @click.option('--language', '-l', multiple=True, help='Target language (repeatable, default from config)')
 @click.option('--enrich-sources/--no-enrich-sources', default=True, help='Enrich notebook with web research (default: True)')
 @click.option('--gen-cover/--no-gen-cover', default=True, help='Generate AI album cover (default: True)')
 @click.option('--skip-plex-sync', is_flag=True, help='Skip syncing to Plex (default: False)')
 @click.option('--verbose', '-v', is_flag=True, help='Enable verbose logging')
-def create_podcast(title, source_file, length, language, enrich_sources, gen_cover, skip_plex_sync, verbose):
+def create_podcast(title, source_file, notebook_id, source_id, length, language, enrich_sources, gen_cover, skip_plex_sync, verbose):
     """Full automated workflow to create a podcast from a source file."""
     setup_logging(verbose)
+    
+    if not source_id and not source_file:
+        click.echo("Error: Either --source-file or --source-id must be provided.", err=True)
+        sys.exit(1)
+        
     async def run():
         from .workflow import run_workflow
         res = await run_workflow(
             title, 
-            source_file, 
-            length, 
-            list(language) if language else None,
+            source_file=source_file, 
+            length=length, 
+            languages=list(language) if language else None,
             enrich_sources=enrich_sources,
             gen_cover=gen_cover,
-            skip_plex_sync=skip_plex_sync
+            skip_plex_sync=skip_plex_sync,
+            notebook_id=notebook_id,
+            source_id=source_id
         )
         click.echo(json.dumps(res))
     asyncio.run(run())

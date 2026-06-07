@@ -60,7 +60,17 @@ async def generate_and_download_podcast(
         
     return downloaded
 
-async def run_workflow(title: str, source_file: str, length: str, languages: list[str], enrich_sources: bool = True, gen_cover: bool = True, skip_plex_sync: bool = False):
+async def run_workflow(
+    title: str, 
+    source_file: str = None, 
+    length: str = None, 
+    languages: list[str] = None, 
+    enrich_sources: bool = True, 
+    gen_cover: bool = True, 
+    skip_plex_sync: bool = False,
+    notebook_id: str = None,
+    source_id: str = None
+):
     config = load_config()
     if not length:
         length = config.get("generate", {}).get("length")
@@ -73,14 +83,22 @@ async def run_workflow(title: str, source_file: str, length: str, languages: lis
         
     logger.info(f"=== Starting Podcast Workflow for '{title}' ===")
     
-    # 1. Create notebook
-    notebook_info = await audio_gen_core.init_notebook(title)
-    notebook_id = notebook_info["notebook_id"]
-    logger.info(f"Created notebook: {notebook_id}")
+    # 1. Create notebook if not provided
+    if not notebook_id:
+        notebook_info = await audio_gen_core.init_notebook(title)
+        notebook_id = notebook_info["notebook_id"]
+        logger.info(f"Created notebook: {notebook_id}")
+    else:
+        logger.info(f"Using existing notebook: {notebook_id}")
     
-    # 2. Upload source
-    source_id = await upload_and_wait_source(notebook_id, source_file)
-    logger.info(f"Source uploaded and processed: {source_id}")
+    # 2. Upload source if not provided
+    if not source_id:
+        if not source_file:
+            raise ValueError("source_file is required when source_id is not provided")
+        source_id = await upload_and_wait_source(notebook_id, source_file)
+        logger.info(f"Source uploaded and processed: {source_id}")
+    else:
+        logger.info(f"Using existing source: {source_id}")
     
     # Branch out parallel tasks
     parallel_tasks = []

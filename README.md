@@ -68,6 +68,9 @@ podcaster create-podcast "My Amazing Podcast" --source-file ./article.pdf
 
 # Skip time-consuming steps if not needed:
 podcaster create-podcast "Quick Podcast" --source-file ./article.pdf --no-enrich-sources --no-gen-cover --skip-plex-sync
+
+# Use existing notebook and source:
+podcaster create-podcast "Existing Content" --notebook-id <notebook_id> --source-id <source_id>
 ```
 
 This will:
