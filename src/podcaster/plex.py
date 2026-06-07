@@ -3,9 +3,10 @@ import shutil
 import subprocess
 import sys
 import asyncio
+from typing import Optional
 import httpx
 from notebooklm import NotebookLMClient
-from .utils import get_storage_path, get_notebook_dir_name, load_config, find_notebook_dir
+from .utils import get_storage_path, get_notebook_dir_name, load_config, find_notebook_dir, setup_logging
 
 import logging
 logger = logging.getLogger(__name__)
@@ -13,20 +14,22 @@ logger = logging.getLogger(__name__)
 async def sync_to_plex(
     notebook_id: str, 
     plex_section_id: str, 
-    podcast_dir: str = None,
-    plex_server_url: str = None,
-    plex_token: str = None,
-    server_library_path: str = None,
-    grace_period: int = 30
+    podcast_dir: Optional[str] = None,
+    plex_server_url: Optional[str] = None,
+    plex_token: Optional[str] = None,
+    server_library_path: Optional[str] = None,
+    grace_period: int = 30,
+    verbose: bool = False
 ):
+    if verbose:
+        setup_logging(verbose)
+        
     storage_path = get_storage_path()
 
     # Get Plex config from env or config file
     config = load_config()
     if not podcast_dir:
-        podcast_dir = config.get("podcast_dir")
-        if not podcast_dir:
-            raise ValueError("podcast_dir is missing and not found in config")
+        podcast_dir = config.get("podcast_dir", "podcasts")
 
     plex_config = config.get("plex", {})
 

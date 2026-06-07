@@ -69,11 +69,10 @@ def poll_artifact_task(arg_json, verbose):
     asyncio.run(run())
 
 @cli.command(name="download-podcast")
-@click.option('--podcast-dir', '-p', help='Output directory (default from config or out)')
-@click.option('--cover', help='Path to cover image')
+@click.option('--podcast-dir', '-p', help='Output directory (default from config or podcasts)')
 @click.option('--arg-json', multiple=True, help='JSON artifact object(s) to download.')
 @click.option('--verbose', '-v', is_flag=True, help='Enable verbose logging')
-def download_podcast(podcast_dir, cover, arg_json, verbose):
+def download_podcast(podcast_dir, arg_json, verbose):
     """Download podcast artifacts. Accepts input from --arg-json or stdin."""
     setup_logging(verbose)
     async def run():
@@ -88,16 +87,41 @@ def download_podcast(podcast_dir, cover, arg_json, verbose):
                 async for item in stream_stdin():
                     yield item
 
-        async for downloaded in audio_gen_core.download_artifacts(input_gen(), podcast_dir, cover):
+        async for downloaded in audio_gen_core.download_artifacts(input_gen(), podcast_dir):
             click.echo(json.dumps(downloaded))
             sys.stdout.flush()
     asyncio.run(run())
 
-@cli.command(name="gen-cover")
+@cli.command(name="tag-podcast")
+@click.option('--cover', help='Path to cover image')
+@click.option('--offset', default=0, help='Starting track number offset (default: 0)')
+@click.option('--arg-json', multiple=True, help='JSON artifact object(s) to tag.')
+@click.option('--verbose', '-v', is_flag=True, help='Enable verbose logging')
+def tag_podcast(cover, offset, arg_json, verbose):
+    """Tag podcast artifacts with metadata. Accepts input from --arg-json or stdin."""
+    setup_logging(verbose)
+    async def run():
+        async def input_gen():
+            if arg_json:
+                for aj in arg_json:
+                    try:
+                        yield json.loads(aj)
+                    except json.JSONDecodeError:
+                        continue
+            else:
+                async for item in stream_stdin():
+                    yield item
+
+        async for tagged in audio_gen_core.tag_artifacts(input_gen(), cover, offset):
+            click.echo(json.dumps(tagged))
+            sys.stdout.flush()
+    asyncio.run(run())
+
+@cli.command(name="generate-cover")
 @click.argument('notebook_id')
 @click.option('--podcast-dir', '-p', help='Output directory (default from config or out)')
 @click.option('--verbose', '-v', is_flag=True, help='Enable verbose logging')
-def gen_cover(notebook_id, podcast_dir, verbose):
+def generate_cover(notebook_id, podcast_dir, verbose):
     """Generate an album cover for the podcast based on notebook summary."""
     setup_logging(verbose)
     async def run():
@@ -171,40 +195,42 @@ def init_podcast_notebook(title, podcast_dir, verbose):
         click.echo(json.dumps(res))
     asyncio.run(run())
 
-@cli.command(name="create-podcast")
+@click.group()
+def workflow():
+    """Higher-level podcast workflows."""
+    pass
+
+@workflow.command(name="deep-dive-single-article")
 @click.argument('title')
-@click.option('--source-file', help='Path to the source file to upload (required if --source-id not given)')
-@click.option('--notebook-id', help='Existing NotebookLM notebook ID')
-@click.option('--source-id', help='Existing NotebookLM source ID')
+@click.argument('source_file', type=click.Path(exists=True))
 @click.option('--length', type=click.Choice(['short', 'default', 'long']), help='Target length (default from config)')
 @click.option('--language', '-l', multiple=True, help='Target language (repeatable, default from config)')
-@click.option('--enrich-sources/--no-enrich-sources', default=True, help='Enrich notebook with web research (default: True)')
-@click.option('--gen-cover/--no-gen-cover', default=True, help='Generate AI album cover (default: True)')
-@click.option('--skip-plex-sync', is_flag=True, help='Skip syncing to Plex (default: False)')
+@click.option('--enrich-sources/--no-enrich-sources', default=None, help='Enrich notebook with web research (default: True)')
+@click.option('--generate-cover/--no-generate-cover', default=None, help='Generate AI album cover (default: True)')
+@click.option('--sync-plex/--no-sync-plex', default=None, help='Sync to Plex (default: True)')
+@click.option('--podcast-dir', '-p', help='Base directory for storage (default from config)')
 @click.option('--verbose', '-v', is_flag=True, help='Enable verbose logging')
-def create_podcast(title, source_file, notebook_id, source_id, length, language, enrich_sources, gen_cover, skip_plex_sync, verbose):
-    """Full automated workflow to create a podcast from a source file."""
+def deep_dive_single_article(title, source_file, length, language, enrich_sources, generate_cover, sync_plex, podcast_dir, verbose):
+    """Full automated workflow to create a podcast from a single source file."""
     setup_logging(verbose)
     
-    if not source_id and not source_file:
-        click.echo("Error: Either --source-file or --source-id must be provided.", err=True)
-        sys.exit(1)
-        
     async def run():
-        from .workflow import run_workflow
-        res = await run_workflow(
+        from .workflows.deep_dive_single_article import workflow as dd_wf
+        res = await dd_wf.run(
             title, 
             source_file=source_file, 
             length=length, 
             languages=list(language) if language else None,
             enrich_sources=enrich_sources,
-            gen_cover=gen_cover,
-            skip_plex_sync=skip_plex_sync,
-            notebook_id=notebook_id,
-            source_id=source_id
+            generate_cover=generate_cover,
+            sync_plex=sync_plex,
+            podcast_dir=podcast_dir,
+            verbose=verbose
         )
         click.echo(json.dumps(res))
     asyncio.run(run())
+
+cli.add_command(workflow)
 
 if __name__ == "__main__":
     cli()

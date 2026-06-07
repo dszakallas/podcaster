@@ -43,6 +43,8 @@ def get_notebook_dir_name(title: str, notebook_id: str, created_at: Optional[dat
         name = safe_title
     return f"{name} [nlm_{notebook_id}]"
 
+DEFAULT_PODCAST_DIR = "podcasts"
+
 def find_notebook_dir(base_dir: str, notebook_id: str) -> Optional[str]:
     """Find an existing notebook directory by matching the [nlm_id] suffix."""
     if not os.path.exists(base_dir):

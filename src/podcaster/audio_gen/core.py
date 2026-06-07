@@ -5,13 +5,15 @@ import asyncio
 import time
 import importlib
 import math
+import tempfile
+import shutil
 from pathlib import Path
 from typing import AsyncGenerator, Optional
 from notebooklm import NotebookLMClient
 from notebooklm.rpc import AudioLength
 from .params import AudioGenParams
 from .. import tagging
-from ..utils import load_config, get_storage_path, sanitize, get_notebook_dir_name, find_notebook_dir, get_or_create_notebook_dir
+from ..utils import load_config, get_storage_path, sanitize, get_notebook_dir_name, find_notebook_dir, get_or_create_notebook_dir, DEFAULT_PODCAST_DIR
 
 import logging
 logger = logging.getLogger(__name__)
@@ -48,7 +50,7 @@ async def generate_tasks(
     dry_run: bool = False
 ) -> AsyncGenerator[dict, None]:
     config = load_config()
-    gen_defaults = config.get("generate", {})
+    gen_defaults = config.get("podcast_generation", {})
     
     if not languages:
         languages = gen_defaults.get("languages", ["en"])
@@ -194,75 +196,87 @@ async def poll_tasks(
 
 async def download_artifacts(
     artifacts: AsyncGenerator[dict, None], 
-    podcast_dir: Optional[str] = None, 
-    cover_path: Optional[str] = None
+    podcast_dir: Optional[str] = None
 ) -> AsyncGenerator[dict, None]:
     storage_path = get_storage_path()
 
     config = load_config()
     if not podcast_dir:
-        podcast_dir = config.get("podcast_dir")
-        if not podcast_dir:
-            raise ValueError("podcast_dir is missing and not found in config")
-
-    defaults = config.get("tags", {})
-    default_album_artist = defaults.get("album_artist", "Dávid Szakállas")
-    default_artists = defaults.get("artists", ["Dávid Szakállas"])
+        podcast_dir = config.get("podcast_dir", DEFAULT_PODCAST_DIR)
 
     os.makedirs(podcast_dir, exist_ok=True)
     
-    # Track counter per notebook directory
-    dir_track_counts = {}
-
     async with await NotebookLMClient.from_storage(storage_path, timeout=120.0) as client:
         async for art in artifacts:
             notebook_id = art["notebook_id"]
             artifact_id = art["artifact_id"]
             title = art.get("title", artifact_id)
+            
+            # Fetch notebook for directory name
+            notebook = await client.notebooks.get(notebook_id)
+            album = notebook.title if notebook else "NotebookLM Podcast"
+
+            # Organize by notebook directory
+            notebook_dir = get_or_create_notebook_dir(podcast_dir, notebook_id, album, notebook.created_at if notebook else None)
+
+            # Filename based on title suffixed with id
+            safe_title = sanitize(title)
+            filename = f"{safe_title} [{artifact_id}].m4a"
+            out_path = os.path.join(notebook_dir, filename)
+            
+            try:
+                logger.debug(f"Downloading {artifact_id} to {out_path}...")
+                await client.artifacts.download_audio(notebook_id, out_path, artifact_id=artifact_id)
+                
+                yield {**art, "path": out_path, "filename": filename}
+            except Exception as e:
+                logger.debug(f"Download failed for {artifact_id}: {e}")
+
+async def tag_artifacts(
+    artifacts: AsyncGenerator[dict, None], 
+    cover_path: Optional[str] = None,
+    track_offset: int = 0
+) -> AsyncGenerator[dict, None]:
+    storage_path = get_storage_path()
+
+    config = load_config()
+    tags_config = config.get("podcast_tags", {})
+    default_album_artist = tags_config.get("album_artist", "Dávid Szakállas")
+    default_artists = tags_config.get("artists", ["Dávid Szakállas"])
+
+    async with await NotebookLMClient.from_storage(storage_path, timeout=120.0) as client:
+        # Counter for generated track numbers
+        auto_track_count = 0
+
+        async for art in artifacts:
+            notebook_id = art["notebook_id"]
+            artifact_id = art["artifact_id"]
+            title = art.get("title", artifact_id)
+            out_path = art["path"]
             metadata = art.get("metadata", {})
             gen_podcast_meta = metadata.get("generate-podcast", {})
             language = gen_podcast_meta.get("language")
             created_at = art.get("created_at")
             
-            # Fetch notebook for album title and directory name
+            # Fetch notebook for album title
             notebook = await client.notebooks.get(notebook_id)
             album = notebook.title if notebook else "NotebookLM Podcast"
             source_url = f"https://notebooklm.google.com/notebook/{notebook_id}"
 
-            # Organize by notebook directory
-            notebook_dir = get_or_create_notebook_dir(podcast_dir, notebook_id, album, notebook.created_at if notebook else None)
-
-            # Initialize track count if needed
-            if notebook_dir not in dir_track_counts:
-                # Count .m4a files in notebook_dir
-                existing_files = [f for f in os.listdir(notebook_dir) if f.endswith(".m4a")]
-                dir_track_counts[notebook_dir] = len(existing_files)
-            
-            # Increment track number
-            dir_track_counts[notebook_dir] += 1
-            track_number = dir_track_counts[notebook_dir]
-
-            # Filename based on title
-            safe_title = sanitize(title)
-            out_path = os.path.join(notebook_dir, f"{safe_title}.m4a")
+            # Determine track number
+            explicit_track = art.get("track")
+            if explicit_track is not None:
+                track_number = explicit_track
+            else:
+                auto_track_count += 1
+                track_number = track_offset + auto_track_count
             
             try:
-                # Use a temporary file for download and tagging
-                import tempfile
-                import shutil
-                
-                with tempfile.NamedTemporaryFile(suffix=".m4a", delete=False) as tmp:
-                    tmp_path = tmp.name
+                logger.debug(f"Tagging {out_path} (Track: {track_number})...")
 
-                logger.debug(f"Downloading {artifact_id} to temporary location {tmp_path}...")
-                
-                await client.artifacts.download_audio(notebook_id, tmp_path, artifact_id=artifact_id)
-                
-                logger.debug(f"Tagging {tmp_path} (Track: {track_number})...", file=sys.stderr)
-
-                # Tagging the temporary file
+                # Tagging the file in-place
                 tagging.tag_file(
-                    audio_file=tmp_path,
+                    audio_file=out_path,
                     cover=cover_path,
                     title=title,
                     album=album,
@@ -276,15 +290,17 @@ async def download_artifacts(
                     language=language
                 )
                 
-                # Move to final destination
-                logger.debug(f"Moving {tmp_path} to {out_path}...")
-                shutil.move(tmp_path, out_path)
+                # Update metadata to show it was tagged
+                metadata["tag-podcast"] = {
+                    "tagged_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                    "track": track_number,
+                    "cover": cover_path
+                }
                 
-                yield {**art, "path": out_path, "track": track_number}
+                yield {**art, "metadata": metadata, "track": track_number}
             except Exception as e:
-                logger.debug(f"Download or tagging failed for {artifact_id}: {e}")
-                if 'tmp_path' in locals() and os.path.exists(tmp_path):
-                    os.remove(tmp_path)
+                logger.debug(f"Tagging failed for {artifact_id}: {e}")
+                yield art
 
 async def generate_cover(notebook_id: str, podcast_dir: Optional[str] = None) -> str:
     from google import genai
@@ -297,9 +313,7 @@ async def generate_cover(notebook_id: str, podcast_dir: Optional[str] = None) ->
     
     config = load_config()
     if not podcast_dir:
-        podcast_dir = config.get("podcast_dir")
-        if not podcast_dir:
-            raise ValueError("podcast_dir is missing and not found in config")
+        podcast_dir = config.get("podcast_dir", DEFAULT_PODCAST_DIR)
 
     async with await NotebookLMClient.from_storage(storage_path, timeout=120.0) as client:
         notebook = await client.notebooks.get(notebook_id)
@@ -394,9 +408,7 @@ async def init_notebook(title: str, podcast_dir: Optional[str] = None) -> dict:
     
     config = load_config()
     if not podcast_dir:
-        podcast_dir = config.get("podcast_dir")
-        if not podcast_dir:
-            raise ValueError("podcast_dir is missing and not found in config")
+        podcast_dir = config.get("podcast_dir", DEFAULT_PODCAST_DIR)
         
     async with await NotebookLMClient.from_storage(storage_path, timeout=120.0) as client:
         logger.debug(f"Creating notebook: {title}")
