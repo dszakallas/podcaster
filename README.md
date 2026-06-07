@@ -67,7 +67,7 @@ The easiest way to create a podcast:
 podcaster create-podcast "My Amazing Podcast" --source-file ./article.pdf
 
 # Skip time-consuming steps if not needed:
-podcaster create-podcast "Quick Podcast" --source-file ./article.pdf --no-enrich-sources --no-gen-cover
+podcaster create-podcast "Quick Podcast" --source-file ./article.pdf --no-enrich-sources --no-gen-cover --skip-plex-sync
 ```
 
 This will:

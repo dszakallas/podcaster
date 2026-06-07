@@ -60,7 +60,7 @@ async def generate_and_download_podcast(
         
     return downloaded
 
-async def run_workflow(title: str, source_file: str, length: str, languages: list[str], enrich_sources: bool = True, gen_cover: bool = True):
+async def run_workflow(title: str, source_file: str, length: str, languages: list[str], enrich_sources: bool = True, gen_cover: bool = True, skip_plex_sync: bool = False):
     config = load_config()
     if not length:
         length = config.get("generate", {}).get("length")
@@ -157,15 +157,19 @@ async def run_workflow(title: str, source_file: str, length: str, languages: lis
     logger.info(f"Downloaded podcasts: {[df['path'] for df in downloaded_files]}")
     
     # 9. Sync to Plex
-    plex_section_id = config.get("plex", {}).get("section_id") 
-    if not plex_section_id:
-        raise ValueError("plex.section_id is missing from config")
-        
-    logger.info(f"Syncing to Plex (section {plex_section_id})...")
-    sync_result = await plex.sync_to_plex(
-        notebook_id=notebook_id,
-        plex_section_id=plex_section_id
-    )
+    if not skip_plex_sync:
+        plex_section_id = config.get("plex", {}).get("section_id") 
+        if not plex_section_id:
+            raise ValueError("plex.section_id is missing from config")
+            
+        logger.info(f"Syncing to Plex (section {plex_section_id})...")
+        sync_result = await plex.sync_to_plex(
+            notebook_id=notebook_id,
+            plex_section_id=plex_section_id
+        )
+    else:
+        logger.info("Skipping Plex sync.")
+        sync_result = {"status": "skipped"}
     
     logger.info("=== Podcast Workflow Complete ===")
     return sync_result
