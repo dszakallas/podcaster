@@ -3,8 +3,8 @@ generate:
   languages: ["en"]
   length: "long"
 tags:
-  album_artist: "Dávid Szakállas"
-  artists: ["Dávid Szakállas"]
+  album_artist: "Your Name"
+  artists: ["Your Name"]
 plex:
-  section_id: 14
-  server_library_path: "/mnt/kolobok/crates/podcasts"
+  section_id: 123
+  server_library_path: "/path/to/your/plex/library"
