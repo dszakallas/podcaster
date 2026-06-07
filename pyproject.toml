@@ -1,0 +1,28 @@
+[project]
+name = "podcaster"
+version = "0.1.0"
+description = "Podcaster automation tools"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "click>=8.4.1",
+    "mutagen>=1.47.0",
+    "notebooklm-py[browser,cookies]==0.3.2",
+    "playwright>=1.50.0",
+    "jinja2",
+    "pydantic",
+    "pyyaml",
+    "google-genai",
+    "Pillow",
+    "httpx",
+]
+
+[project.scripts]
+podcaster = "podcaster.cli:cli"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/podcaster"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

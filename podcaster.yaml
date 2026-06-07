@@ -1,0 +1,10 @@
+podcast_dir: "podcasts"
+generate:
+  languages: ["en"]
+  length: "long"
+tags:
+  album_artist: "Dávid Szakállas"
+  artists: ["Dávid Szakállas"]
+plex:
+  section_id: 14
+  server_library_path: "/mnt/kolobok/crates/podcasts"
