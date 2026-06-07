@@ -28,20 +28,20 @@ bin/
 # Devenv
 .devenv/
 .direnv/
+.env
 
 # Project specific
-.env
 .playwright/
 .tmp/
 podcasts/
-podcasts.bak/
 downloads/
-*.m4a
-*.mp3
-*.png
-generate-album-cover.txt
-aljazeera_article_iran_war_100_days.txt
-article_ai_boom.txt
 
 # OS
 .DS_Store
+
+# Tools/IDEs
+.mcp.json
+.copilot
+.agents/mcp_config.json
+.vscode
+.gemini
