@@ -8,7 +8,7 @@ Automation tools for generating podcasts from articles and documents using Noteb
 - **Deep Research**: Enriches the notebook with web research related to your source material.
 - **AI Cover Art**: Generates custom 1:1 album covers using Gemini.
 - **Multi-lingual**: Support for generating podcasts in multiple languages.
-- **Plex Integration**: Automatically syncs and tags generated podcasts for your Plex library.
+- **Plex Integration**: Automatically tags generated podcasts and triggers a library rescan in Plex.
 - **Modular CLI**: Each step of the process is available as a standalone command, supporting JSON-piping for advanced automation.
 
 ## Prerequisites
@@ -111,6 +111,8 @@ podcaster download-podcast --cover ./cover.png < completed.json
 ```bash
 podcaster sync-podcast-to-plex <notebook_id> <section_id>
 ```
+
+> **Note:** The Plex syncer assumes that your `podcast_dir` is already the Plex library root. The tool does not move or "sync" files to a different location; it simply triggers a library rescan in Plex after downloading the files to the local directory.
 
 ## Architecture
 
