@@ -60,7 +60,7 @@ async def generate_and_download_podcast(
         
     return downloaded
 
-async def run_workflow(title: str, source_file: str, length: str, languages: list[str]):
+async def run_workflow(title: str, source_file: str, length: str, languages: list[str], enrich_sources: bool = True, gen_cover: bool = True):
     config = load_config()
     if not length:
         length = config.get("generate", {}).get("length")
@@ -83,32 +83,47 @@ async def run_workflow(title: str, source_file: str, length: str, languages: lis
     logger.info(f"Source uploaded and processed: {source_id}")
     
     # Branch out parallel tasks
-    async def enrich_task():
-        logger.debug("Enriching source...")
-        await research.research_from_source(notebook_id, source_id, mode='fast', max_imports=10)
-        logger.debug("Source enrichment complete.")
-
-    async def cover_task():
-        logger.debug("Generating cover...")
-        cover_path = await audio_gen_core.generate_cover(notebook_id)
-        logger.debug(f"Cover generated: {cover_path}")
-        return cover_path
-
-
-    # 3-5. Run enrich, cover, and format args in parallel
-    logger.info("Running enrichment and cover generation in parallel...")
-    results = await asyncio.gather(
-        enrich_task(),
-        cover_task(),
-        return_exceptions=True
-    )
+    parallel_tasks = []
     
-    for res in results:
-        if isinstance(res, Exception):
-            logger.info(f"Error during parallel step: {res}")
-            raise res
+    if enrich_sources:
+        async def enrich_task():
+            logger.debug("Enriching source...")
+            await research.research_from_source(notebook_id, source_id, mode='fast', max_imports=10)
+            logger.debug("Source enrichment complete.")
+        parallel_tasks.append(enrich_task())
+    else:
+        logger.info("Skipping source enrichment.")
+
+    if gen_cover:
+        async def cover_task():
+            logger.debug("Generating cover...")
+            cover_path = await audio_gen_core.generate_cover(notebook_id)
+            logger.debug(f"Cover generated: {cover_path}")
+            return cover_path
+        parallel_tasks.append(cover_task())
+    else:
+        logger.info("Skipping cover generation.")
+
+
+    # 3-5. Run enrich and cover in parallel if enabled
+    results = []
+    if parallel_tasks:
+        logger.info("Running parallel background tasks...")
+        results = await asyncio.gather(
+            *parallel_tasks,
+            return_exceptions=True
+        )
+        
+        for res in results:
+            if isinstance(res, Exception):
+                logger.info(f"Error during parallel step: {res}")
+                raise res
             
-    cover_image = results[1]
+    cover_image = None
+    if gen_cover:
+        # If both are enabled, cover is at index 1. If only cover is enabled, it's at index 0.
+        cover_image = results[-1] if results else None
+    
     format_args = {"source_id": source_id}
     
     # 6. Generate podcasts
