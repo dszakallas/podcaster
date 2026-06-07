@@ -20,7 +20,7 @@ Follow these steps precisely:
    - Save the formatted extracted text to a local file, e.g., `article.txt`.
 
 3. **Run Podcast Generation Workflow**
-   - Execute the fully automated workflow in the foreground.
+   - Execute the fully automated workflow in the **background** (set `is_background: true` when calling `run_shell_command`) to prevent timeouts, as the process takes ~10-20 minutes.
    - Run: `uv run podcaster workflow deep-dive-single-article "${article_title}" article.txt`
    - The workflow will automatically handle notebook initialization, source uploading, research enrichment, cover generation, podcast generation, downloading, tagging, and syncing to Plex.
 
