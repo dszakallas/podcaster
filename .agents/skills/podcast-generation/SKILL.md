@@ -1,3 +1,8 @@
+---
+name: podcast-generation
+description: Automated workflow for creating podcasts from articles using NotebookLM and Gemini, including web research, AI cover art, and Plex synchronization.
+---
+
 # Podcast Generation Skill
 
 Use this skill when the user wants to create a podcast from a web article or a search query and sync it to Plex.
