@@ -48,7 +48,8 @@ async def get_prompt(client: NotebookLMClient, inputs: Inputs, params: "AudioGen
         "'category' (e.g. Technology, Politics, Economy), "
         "'host_role' (e.g. Language Teacher, Explainer, Enthusiastic Learner), "
         "'guest_role' (e.g. Expert, Native Speaker, Interviewee), and "
-        "'agenda' (a sketch of the topics to cover, formatted as a brief list or paragraph, focused on explaining the source material clearly)."
+        "'agenda' (a sketch of the topics to cover, formatted as a brief list or paragraph, focused on explaining the source material clearly). "
+        "When defining the roles and agenda, keep in mind that the host's main role is to actively engage in a conversation and to facilitate the learning process for the target level. "
         f"{summary_instruction} "
         "Respond ONLY with the JSON object, without markdown formatting."
     )
