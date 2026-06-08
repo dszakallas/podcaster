@@ -16,6 +16,7 @@ class Inputs(BaseModel):
     source_id: str
     target_level: Optional[str] = "B2" # A1, A2, B1, B2
     delivery_speed: Optional[str] = "normal" # normal, slow, slower
+    segmented_summaries: Optional[str] = "off" # off, moderate, frequent
 
 async def get_prompt(client: NotebookLMClient, inputs: Inputs, params: "AudioGenParams") -> str:
     from ....core import DURATION_MAP
@@ -34,6 +35,12 @@ async def get_prompt(client: NotebookLMClient, inputs: Inputs, params: "AudioGen
 
     duration = DURATION_MAP.get(params.length, params.length)
 
+    summary_instruction = ""
+    if inputs.segmented_summaries == "moderate":
+        summary_instruction = " Please include a 'recap' topic every 2-3 main topics (roughly every 7-10 minutes) where Host 1 summarizes the discussion so far in simpler terms."
+    elif inputs.segmented_summaries == "frequent":
+        summary_instruction = " Please include a 'recap' topic after every main topic (roughly every 3-6 minutes) where Host 1 summarizes the discussion so far in simpler terms."
+
     # Ask NotebookLM for roles and category
     prompt = (
         f"Based on the main source of this notebook, I want to create a {duration} podcast optimized for language learners at the {inputs.target_level} level. "
@@ -41,7 +48,8 @@ async def get_prompt(client: NotebookLMClient, inputs: Inputs, params: "AudioGen
         "'category' (e.g. Technology, Politics, Economy), "
         "'host_role' (e.g. Language Teacher, Explainer, Enthusiastic Learner), "
         "'guest_role' (e.g. Expert, Native Speaker, Interviewee), and "
-        "'agenda' (a sketch of the topics to cover, formatted as a brief list or paragraph, focused on explaining the source material clearly). "
+        "'agenda' (a sketch of the topics to cover, formatted as a brief list or paragraph, focused on explaining the source material clearly)."
+        f"{summary_instruction} "
         "Respond ONLY with the JSON object, without markdown formatting."
     )
     logger.debug("Determining format arguments from NotebookLM...")
@@ -82,5 +90,6 @@ async def get_prompt(client: NotebookLMClient, inputs: Inputs, params: "AudioGen
         topic_summary=topic_summary,
         length=duration,
         target_level=inputs.target_level,
-        delivery_speed=inputs.delivery_speed
+        delivery_speed=inputs.delivery_speed,
+        segmented_summaries=inputs.segmented_summaries
     )
