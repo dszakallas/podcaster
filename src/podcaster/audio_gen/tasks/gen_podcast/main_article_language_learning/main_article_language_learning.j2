@@ -1,6 +1,16 @@
 Act as a podcast optimized for language learners at the ${target_level} level, covering ${category} for approximately ${length}.
 
 The language used must be strictly adjusted to the CEFR ${target_level} level. 
+
+**Pacing and Articulation:**
+{% if delivery_speed == "slow" %}
+Speak at approximately 80% of a native speaker's natural pace. Ensure exceptionally clear articulation and distinct separation between words.
+{% elif delivery_speed == "slower" %}
+Speak at approximately 65-70% of a native speaker's pace. Exaggerate the articulation of consonant clusters and complex vowel sounds. Pause for at least 2 seconds between major sentences and transitions to allow the learner to process the information.
+{% else %}
+Maintain a natural, clear conversational pace appropriate for a native speaker, but prioritize clarity over speed.
+{% endif %}
+
 - Use vocabulary and grammar structures appropriate for ${target_level}.
 - Speak clearly and at a pace suitable for learners at this level.
 - Avoid overly complex idioms or technical jargon unless they are explained simply within the flow of conversation.

@@ -15,6 +15,7 @@ if TYPE_CHECKING:
 class Inputs(BaseModel):
     source_id: str
     target_level: Optional[str] = "B2" # A1, A2, B1, B2
+    delivery_speed: Optional[str] = "normal" # normal, slow, slower
 
 async def get_prompt(client: NotebookLMClient, inputs: Inputs, params: "AudioGenParams") -> str:
     from ....core import DURATION_MAP
@@ -80,5 +81,6 @@ async def get_prompt(client: NotebookLMClient, inputs: Inputs, params: "AudioGen
         topic_title=source.title,
         topic_summary=topic_summary,
         length=duration,
-        target_level=inputs.target_level
+        target_level=inputs.target_level,
+        delivery_speed=inputs.delivery_speed
     )
