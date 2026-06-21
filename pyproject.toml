@@ -7,7 +7,7 @@ requires-python = ">=3.12,<3.13"
 dependencies = [
     "click>=8.4.1",
     "mutagen>=1.47.0",
-    "notebooklm-py[browser,cookies]==0.3.2",
+    "notebooklm-py[browser]==0.3.2",
     "playwright>=1.50.0",
     "jinja2",
     "pydantic",
@@ -15,10 +15,38 @@ dependencies = [
     "google-genai",
     "Pillow",
     "httpx",
+    "google-cloud-speech",
+    "google-cloud-storage",
 ]
 
 [project.scripts]
 podcaster = "podcaster.cli:cli"
+
+[tool.black]
+line-length = 88
+target-version = ["py312"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+ignore = ["E501"]
+
+[tool.pyright]
+include = ["src/podcaster"]
+typeCheckingMode = "basic"
+pythonVersion = "3.12"
+reportArgumentType = false
+reportAttributeAccessIssue = false
+reportCallIssue = false
+reportGeneralTypeIssues = false
+reportInvalidTypeArguments = false
+reportMissingModuleSource = false
+reportOptionalMemberAccess = false
+reportPrivateImportUsage = false
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/podcaster"]

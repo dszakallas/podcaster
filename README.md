@@ -5,10 +5,12 @@ Automation tools for generating podcasts from articles and documents using Noteb
 ## Features
 
 - **Automated Workflows**: From a single source file to a Plex-ready podcast in one command.
+- **Paywall Bypassing**: Automated scraping fallback for paywalled sites using Playwright.
 - **Deep Research**: Enriches the notebook with web research related to your source material.
 - **AI Cover Art**: Generates custom 1:1 album covers using Gemini.
+- **Transcription**: Generates perfectly synchronized LRC lyrics (grouped into 2-second readable segments) using Google Cloud Speech-to-Text (Chirp 2).
+- **Rsync & Rclone Integration**: Automatically syncs final audio and lyric files to a destination server (supporting both `rsync` and `rclone`), tags them, and triggers a library rescan in Plex.
 - **Multi-lingual**: Support for generating podcasts in multiple languages.
-- **Plex Integration**: Automatically tags generated podcasts and triggers a library rescan in Plex.
 - **Streaming CLI Pipeline**: Uses asynchronous generators and NDJSON to allow real-time pipelining of tasks (`generate | poll | download | tag`).
 
 ## Prerequisites
@@ -35,26 +37,89 @@ uv run podcaster --help
 
 ## Configuration
 
-The tool reads from `podcaster.yaml` in the current directory.
+The tool reads from `podcaster.yaml` in the current directory. It uses a strict Pydantic schema for validation.
 
 ```yaml
 podcast_dir: "podcasts"
+agents:
+  agy-gemini-flash:
+    command: "agy"
+    args:
+      - "--model"
+      - "Gemini 3.5 Flash (Low)"
+      - "--dangerously-skip-permissions"
+      - "-p"
+      - "{{ prompt }}"
+  claude:
+    command: "claude"
+    args:
+      - "--model"
+      - "claude-sonnet-4-6"
+      - "--dangerously-skip-permissions"
+      - "-p"
+      - "{{ prompt }}"
+
+scraper:
+  ref: agy-gemini-flash
+  tool: "chrome-devtools" # name of the mcp server to use for scraping
+
 podcast_generation:
   languages: ["en", "hu"]
-  length: "long"
+  length: "default" # short, default, long, or auto (inferred from article)
+
 podcast_tags:
   album_artist: "Your Name"
   artists: ["Your Name"]
 
+podcast_transcription:
+  speed_factor: 1.5
+
 workflow:
-  deep_dive_single_article:
-    enrich_sources: true
-    generate_cover: true
-    sync_plex: true
+  deep-dive-default:
+    type: "deep_dive_article"
+    enrich_web:
+      enable: true
+      max_imports: 5
+      mode: "fast"
+    generate_cover:
+      enable: true
+    transcribe:
+      enable: true
+      languages: ["cs", "en"]
+    distribute:
+      - type: plex
+        ref: my-media-server
+      - type: rsync
+        ref: gdrive-backup
+
+rsync:
+  main-server:
+    method: "rsync"
+    destination: "user@host:/mnt/podcasts"
+  gdrive-backup:
+    method: "rclone"
+    destination: "gdrive:podcasts"
 
 plex:
-  section_id: 14
-  server_library_path: "/mnt/podcasts"
+  my-media-server:
+    rsync:
+      enabled: true
+      ref: main-server
+    section_id: 14
+    server_library_path: "/mnt/podcasts"
+    server_url: "http://localhost:32400"
+    token: "your-plex-token"
+
+gcp:
+  project_id: "your-gcp-project"
+  location: "us-central1"
+  gcs_bucket: "your-bucket"
+
+research:
+  unimportables:
+    - "example\\.com"
+    - "another-example\\.com"
+  import_fallback: "scrape"
 ```
 
 ### Environment Variables
@@ -68,69 +133,130 @@ plex:
 
 ### 1. Full Automated Workflow
 
-The easiest way to create a podcast from a single article:
+The easiest way to create a podcast using a named preset from `podcaster.yaml`:
 
 ```bash
-podcaster workflow deep-dive-single-article "My Amazing Podcast" ./article.pdf --verbose
+# Basic usage with a new article (title is automatically derived)
+podcaster workflow run deep-dive-default ./article.pdf --verbose
 
-# Skip time-consuming steps if not needed:
-podcaster workflow deep-dive-single-article "Quick Podcast" ./article.pdf \
-  --no-enrich-sources --no-generate-cover --no-sync-plex
+# Basic usage with a custom title
+podcaster workflow run deep-dive-default ./article.pdf --title "My Amazing Podcast" --verbose
+
+# Using a direct URL (supports automated scraping for paywalled sites)
+podcaster workflow run deep-dive-default https://example.com/paywalled-site --title "Market Analysis" --verbose
+
+# Resuming a failed or interrupted workflow run
+podcaster workflow run deep-dive-default --resume <notebook_id>
+
+# Overriding preset defaults:
+podcaster workflow run deep-dive-default ./article.txt \
+  --title "Quick Podcast" --no-enrich-web --no-generate-cover --no-sync-plex
 ```
 
 This workflow will automatically:
 1. Create a NotebookLM notebook.
-2. Upload the source file.
-3. Perform "fast" web research to enrich the context.
+2. Upload the source file or URL (triggering Playwright scraping if blocked).
+3. Perform web research to enrich the context based on `enrich_web` settings.
 4. Generate a custom album cover.
 5. Trigger podcast generation in your configured default languages.
 6. Poll for completion, download the files, and tag them.
-7. Sync the files to your Plex library.
+7. Transcribe the audio to generate synchronized LRC lyrics (if enabled).
+8. Rsync the files to a remote destination (if enabled).
+9. Sync the files to your Plex library.
 
 ### 2. The Streaming Pipeline
 
-You can run individual steps of the audio generation process using standard Unix pipes. This allows downloads to start immediately as individual language tasks complete, rather than waiting for the entire batch.
+You can run individual steps of the audio generation process using standard Unix pipes.
 
 ```bash
 export PYTHONUNBUFFERED=1 # Recommended for real-time console output
 
-podcaster generate-podcast <notebook_id> main-article-with-author | \
-podcaster poll-artifact-task | \
-podcaster download-podcast | \
-podcaster tag-podcast --cover ./album_cover.png
+podcaster podcast create <notebook_id> main-article-with-author | \
+podcaster podcast poll | \
+podcaster podcast download | \
+podcaster tag-podcast --cover ./album_cover.png | \
+podcaster transcription create | \
+podcaster transcription poll | \
+podcaster transcription download
 ```
 
 ### 3. Standalone Commands
 
-#### Create a notebook
-Creates the notebook and initializes its local storage directory.
+#### Import Web
+Imports a URL, respecting the `unimportables` and `scrape` fallback logic.
 ```bash
-podcaster init-podcast-notebook "Project Title"
+podcaster import-web <notebook_id> <url>
 ```
 
-#### Research from a source
+#### Create and initialize a local notebook
+Creates a new remote notebook or pulls details for an existing one, and initializes its local directory.
+
+> [!NOTE]
+> When using `--from-source`, the remote notebook is created first, the source is uploaded, and the title is automatically derived from the uploaded source. Only after a successful upload is the local podcast directory created (named `[Derived Title] [nlm_<notebook_id>]`). If remote creation or upload fails, the remote notebook is automatically cleaned up (deleted) to prevent orphaned notebooks, and no local directory is created.
+
 ```bash
-podcaster research-from-source <notebook_id> <source_id> --mode deep
+# Initialize a new notebook with a title
+podcaster init-podcast-notebook --title "Project Title"
+
+# Initialize an existing notebook locally
+podcaster init-podcast-notebook --notebook-id <notebook_id>
+
+# Initialize a new notebook from a source file (title is derived from the source)
+podcaster init-podcast-notebook --from-source ./article.txt
 ```
 
-#### Generate cover art
+#### Transcribe a podcast
 ```bash
-podcaster generate-cover <notebook_id>
+podcaster transcription create --arg-json '{"path": "./podcasts/episode.m4a", "metadata": {"generate-podcast": {"language": "en"}}}' | \
+podcaster transcription poll | \
+podcaster transcription download
 ```
 
-#### Sync to Plex
+#### Distribute a podcast (rsync/rclone)
+Distributes a podcast to a remote destination using a named preset or manual destination.
 ```bash
-podcaster sync-podcast-to-plex <notebook_id> <section_id>
+podcaster dist-rsync <notebook_id> --preset backup-drive
 ```
 
-> **Note:** The Plex syncer assumes that your local `podcast_dir` is mounted or synced to the Plex library root. The tool does not move files across the network; it simply triggers a library rescan in Plex.
+#### Distribute to Plex
+Distributes a notebook's podcasts to a Plex library using a named preset.
+```bash
+podcaster dist-plex <notebook_id> --preset my-media-server
+```
+
+## Code Quality
+
+Three tools are enforced on all Python files under `src/podcaster/`:
+
+| Tool | Purpose | Command |
+|------|---------|---------|
+| **Black** | Formatting (check-only) | `uv run black --check src/podcaster` |
+| **Ruff** | Linting | `uv run ruff check src/podcaster` |
+| **Pyright** | Type checking (basic mode) | `uv run pyright src/podcaster` |
+
+All three are wired into pre-commit hooks via `prek`. Run them all at once:
+
+```bash
+prek run --all-files
+```
+
+Or reformat first, then check:
+
+```bash
+uv run black src/podcaster
+uv run ruff check src/podcaster --fix
+prek run --all-files
+```
+
+The hooks are configured in `devenv.nix` and run automatically on `git commit`.
 
 ## Architecture
 
-- **`src/podcaster/workflows/`**: High-level orchestrations (e.g., `deep_dive_single_article`).
+- **`src/podcaster/workflows/`**: High-level orchestrations (e.g., `deep_dive_article`).
+- **`src/podcaster/config.py`**: Pydantic schema for `podcaster.yaml`.
 - **`src/podcaster/audio_gen/core.py`**: Streaming generators for NotebookLM artifact interaction.
 - **`src/podcaster/cli.py`**: Command-line interface bridging to the generators.
-- **`src/podcaster/research.py`**: Context enrichment logic.
+- **`src/podcaster/research.py`**: Context enrichment logic and web importing.
 - **`src/podcaster/plex.py`**: Plex library synchronization.
 - **`src/podcaster/tagging.py`**: Comprehensive audio metadata (ID3/MP4/OGG) management.
 - **`src/podcaster/utils.py`**: Shared folder management and sanitization.

@@ -1,10 +1,80 @@
 podcast_dir: "podcasts"
-generate:
-  languages: ["en"]
-  length: "long"
-tags:
+agents:
+  agy-gemini-flash:
+    command: "agy"
+    args:
+      - "--model"
+      - "Gemini 3.5 Flash (Low)"
+      - "--dangerously-skip-permissions"
+      - "-p"
+      - "{{ prompt }}"
+  claude:
+    command: "claude"
+    args:
+      - "--model"
+      - "claude-sonnet-4-6"
+      - "--dangerously-skip-permissions"
+      - "-p"
+      - "{{ prompt }}"
+
+scraper:
+  ref: agy-gemini-flash
+  tool: "chrome-devtools" # name of the mcp server to use for scraping
+
+podcast_generation:
+  languages: ["en", "hu"]
+  length: "default" # options: short, default, long, auto
+
+podcast_tags:
   album_artist: "Your Name"
   artists: ["Your Name"]
+
+podcast_transcription:
+  speed_factor: 1.5
+
+workflow:
+  deep-dive-default:
+    type: "deep_dive_article"
+    enrich_web:
+      enable: true
+      max_imports: 5
+      mode: "fast"
+    generate_cover:
+      enable: true
+    transcribe:
+      enable: false
+      languages: ["cs"]
+    distribute:
+      - type: plex
+        ref: my-media-server
+      - type: rsync
+        ref: backup-drive
+
+rsync:
+  main-server:
+    method: "rsync"
+    destination: "user@host:/path/to/podcasts"
+  backup-drive:
+    method: "rclone"
+    destination: "gdrive:backup/podcasts"
+
 plex:
-  section_id: 123
-  server_library_path: "/path/to/your/plex/library"
+  my-media-server:
+    rsync:
+      enabled: true
+      ref: main-server
+    section_id: 123
+    server_library_path: "/path/on/server/to/podcasts"
+    server_url: "http://localhost:32400"
+    token: "your-plex-token"
+
+gcp:
+  project_id: "your-gcp-project-id"
+  location: "us-central1"
+  gcs_bucket: "your-gcs-bucket-name"
+
+research:
+  unimportables:
+    - "example\\.com"
+    - "another-example\\.com"
+  import_fallback: "scrape"

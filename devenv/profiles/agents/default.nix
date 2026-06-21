@@ -12,10 +12,19 @@ let
     playwright = {
       type = "stdio";
       command = "playwright-mcp";
+      args = [ "--headless" ];
       env = {
-        "PLAYWRIGHT_MCP_USER_DATA_DIR" = "${config.devenv.root}/.playwright/user-data";
-        "PLAYWRIGHT_MCP_OUTPUT_DIR" = "${config.devenv.root}/.playwright/output";
+        "PLAYWRIGHT_MCP_USER_DATA_DIR" = config.env.PLAYWRIGHT_USER_DATA_DIR;
+        "PLAYWRIGHT_MCP_OUTPUT_DIR" = config.env.PLAYWRIGHT_OUTPUT_DIR;
         "PLAYWRIGHT_MCP_BROWSER" = "chromium";
+        "PLAYWRIGHT_BROWSERS_PATH" = config.env.PLAYWRIGHT_BROWSERS_PATH;
+      };
+    };
+    chrome-devtools = {
+      type = "stdio";
+      command = "npx";
+      args = [ "-y" "chrome-devtools-mcp@latest" "--no-usage-statistics" "--no-performance-crux" ];
+      env = {
       };
     };
   };
