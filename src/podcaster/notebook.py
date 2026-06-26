@@ -106,31 +106,21 @@ async def init_notebook(
                 except Exception as e:
                     logger.warning(f"Failed to re-fetch notebook title: {e}")
 
-                # If still empty, try to get the first source title
+                # If still empty, prompt the notebook to suggest a title based on the uploaded source
                 if not derived_title:
                     try:
-                        sources = await client.sources.list(created_notebook_id)
-                        if sources:
-                            derived_title = sources[0].title
-                            if derived_title and "." in derived_title:
-                                base_name, ext = os.path.splitext(derived_title)
-                                if ext.lower() in (
-                                    ".txt",
-                                    ".pdf",
-                                    ".docx",
-                                    ".md",
-                                    ".html",
-                                    ".htm",
-                                    ".mp3",
-                                    ".m4a",
-                                ):
-                                    derived_title = (
-                                        base_name.replace("_", " ")
-                                        .replace("-", " ")
-                                        .title()
-                                    )
+                        logger.info("Prompting notebook to generate a title...")
+                        chat_res = await client.chat.ask(
+                            created_notebook_id,
+                            "Based on the uploaded source, suggest a concise, catchy, and professional title for this notebook/podcast. "
+                            "Do not include any introductory or concluding text. Respond ONLY with the suggested title.",
+                            source_ids=[source_id],
+                        )
+                        derived_title = (
+                            chat_res.answer.strip().strip('"').strip("'").strip()
+                        )
                     except Exception as e:
-                        logger.warning(f"Failed to list sources: {e}")
+                        logger.warning(f"Failed to prompt notebook for a title: {e}")
 
                 if not derived_title:
                     derived_title = "Notebook"
