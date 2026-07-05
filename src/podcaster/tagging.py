@@ -23,9 +23,8 @@ from mutagen.id3 import (
 from mutagen.mp3 import MP3
 from mutagen.mp4 import MP4, MP4Cover
 from mutagen.oggvorbis import OggVorbis
-from notebooklm import NotebookLMClient
 
-from .utils import get_storage_path, load_config
+from .utils import load_config
 
 logger = logging.getLogger(__name__)
 
@@ -252,69 +251,61 @@ async def tag_artifacts(
     artifacts: AsyncGenerator[dict, None],
     cover_path: Optional[str] = None,
     track_offset: int = 0,
+    album: Optional[str] = None,
+    created_at: Optional[str] = None,
 ) -> AsyncGenerator[dict, None]:
-    storage_path = get_storage_path()
-
     config = load_config()
     tags_config = config.podcast_tags
     default_album_artist = tags_config.album_artist
     default_artists = tags_config.artists
 
-    async with await NotebookLMClient.from_storage(
-        storage_path, timeout=120.0
-    ) as client:
-        auto_track_count = 0
+    auto_track_count = 0
 
-        async for art in artifacts:
-            notebook_id = art["notebook_id"]
-            artifact_id = art["artifact_id"]
-            title = art.get("title", artifact_id)
-            out_path = art["path"]
-            metadata = art.get("metadata", {})
-            gen_podcast_meta = metadata.get("generate-podcast", {})
-            language = gen_podcast_meta.get("language")
+    async for art in artifacts:
+        notebook_id = art["notebook_id"]
+        artifact_id = art["artifact_id"]
+        title = art.get("title", artifact_id)
+        out_path = art["path"]
+        metadata = art.get("metadata", {})
+        gen_podcast_meta = metadata.get("generate-podcast", {})
+        language = gen_podcast_meta.get("language")
+        source_url = f"https://notebooklm.google.com/notebook/{notebook_id}"
 
-            notebook = await client.notebooks.get(notebook_id)
-            album = notebook.title if notebook else "NotebookLM Podcast"
-            source_url = f"https://notebooklm.google.com/notebook/{notebook_id}"
+        album_val = album or art.get("album") or "NotebookLM Podcast"
+        created_at_val = created_at or art.get("created_at")
 
-            if notebook and notebook.created_at:
-                created_at = notebook.created_at.isoformat()
-            else:
-                created_at = art.get("created_at")
+        explicit_track = art.get("track")
+        if explicit_track is not None:
+            track_number = explicit_track
+        else:
+            auto_track_count += 1
+            track_number = track_offset + auto_track_count
 
-            explicit_track = art.get("track")
-            if explicit_track is not None:
-                track_number = explicit_track
-            else:
-                auto_track_count += 1
-                track_number = track_offset + auto_track_count
+        try:
+            logger.debug(f"Tagging {out_path} (Track: {track_number})...")
 
-            try:
-                logger.debug(f"Tagging {out_path} (Track: {track_number})...")
+            tag_file(
+                audio_file=out_path,
+                cover=cover_path,
+                title=title,
+                album=album_val,
+                track=track_number,
+                date=created_at_val[:10] if created_at_val else None,
+                artists=default_artists,
+                album_artist=default_album_artist,
+                source=source_url,
+                in_place=True,
+                out=None,
+                language=language,
+            )
 
-                tag_file(
-                    audio_file=out_path,
-                    cover=cover_path,
-                    title=title,
-                    album=album,
-                    track=track_number,
-                    date=created_at[:10] if created_at else None,
-                    artists=default_artists,
-                    album_artist=default_album_artist,
-                    source=source_url,
-                    in_place=True,
-                    out=None,
-                    language=language,
-                )
+            metadata["tag-podcast"] = {
+                "tagged_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "track": track_number,
+                "cover": cover_path,
+            }
 
-                metadata["tag-podcast"] = {
-                    "tagged_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                    "track": track_number,
-                    "cover": cover_path,
-                }
-
-                yield {**art, "metadata": metadata, "track": track_number}
-            except Exception as error:
-                logger.debug(f"Tagging failed for {artifact_id}: {error}")
-                yield art
+            yield {**art, "metadata": metadata, "track": track_number}
+        except Exception as error:
+            logger.debug(f"Tagging failed for {artifact_id}: {error}")
+            yield art

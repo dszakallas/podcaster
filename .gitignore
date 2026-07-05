@@ -20,6 +20,7 @@ downloads/
 .vscode
 .gemini
 .antigravitycli
+opencode.json
 
 # Python
 __pycache__/

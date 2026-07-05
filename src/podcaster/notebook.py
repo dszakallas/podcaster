@@ -3,6 +3,7 @@ import os
 from typing import Optional
 
 from notebooklm import NotebookLMClient
+from notebooklm.exceptions import NotebookNotFoundError
 
 from .utils import get_or_create_notebook_dir, get_storage_path, load_config
 
@@ -164,9 +165,10 @@ async def init_notebook(
         ) as client:
             if notebook_id:
                 logger.debug(f"Fetching existing notebook: {notebook_id}")
-                notebook = await client.notebooks.get(notebook_id)
-                if not notebook:
-                    raise ValueError(f"Notebook {notebook_id} not found")
+                try:
+                    notebook = await client.notebooks.get(notebook_id)
+                except NotebookNotFoundError as e:
+                    raise ValueError(f"Notebook {notebook_id} not found") from e
             else:
                 logger.debug(f"Creating notebook: {title}")
                 notebook = await client.notebooks.create(title)

@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import AsyncGenerator, Optional
 
 from notebooklm import NotebookLMClient
+from notebooklm.exceptions import NotebookNotFoundError
 from notebooklm.rpc import AudioLength
 
 from ..utils import (
@@ -238,8 +239,12 @@ async def download_artifacts(
             title = art.get("title", artifact_id)
 
             # Fetch notebook for directory name
-            notebook = await client.notebooks.get(notebook_id)
-            album = notebook.title if notebook else "NotebookLM Podcast"
+            try:
+                notebook = await client.notebooks.get(notebook_id)
+                album = notebook.title if notebook else "NotebookLM Podcast"
+            except NotebookNotFoundError:
+                notebook = None
+                album = "NotebookLM Podcast"
 
             # Organize by notebook directory
             notebook_dir = get_or_create_notebook_dir(
@@ -260,6 +265,16 @@ async def download_artifacts(
                     notebook_id, out_path, artifact_id=artifact_id
                 )
 
-                yield {**art, "path": out_path, "filename": filename}
+                yield {
+                    **art,
+                    "path": out_path,
+                    "filename": filename,
+                    "album": album,
+                    "created_at": (
+                        notebook.created_at.isoformat()
+                        if notebook and notebook.created_at
+                        else art.get("created_at")
+                    ),
+                }
             except Exception as e:
                 logger.debug(f"Download failed for {artifact_id}: {e}")

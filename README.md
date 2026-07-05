@@ -60,8 +60,9 @@ agents:
       - "{{ prompt }}"
 
 scraper:
-  ref: agy-gemini-flash
   tool: "chrome-devtools" # name of the mcp server to use for scraping
+  agent:
+    ref: agy-gemini-flash
 
 podcast_generation:
   languages: ["en", "hu"]
@@ -146,7 +147,7 @@ podcaster workflow run deep-dive-default ./article.pdf --title "My Amazing Podca
 podcaster workflow run deep-dive-default https://example.com/paywalled-site --title "Market Analysis" --verbose
 
 # Resuming a failed or interrupted workflow run
-podcaster workflow run deep-dive-default --resume <notebook_id>
+podcaster workflow resume <notebook_id>
 
 # Overriding preset defaults:
 podcaster workflow run deep-dive-default ./article.txt \
@@ -223,6 +224,25 @@ Distributes a notebook's podcasts to a Plex library using a named preset.
 ```bash
 podcaster dist-plex <notebook_id> --preset my-media-server
 ```
+
+#### Scrape a web target (standalone)
+Scrapes the main article text from a target URL using the configured agent.
+```bash
+podcaster scrape <target_url> [--dry-run]
+```
+
+#### Edit a workflow state
+Opens the workflow's state.json in the editor (using `$EDITOR`) for editing.
+```bash
+podcaster workflow edit <notebook_id>
+```
+
+#### Resume a workflow
+Resumes a failed or interrupted workflow run from its state file.
+```bash
+podcaster workflow resume <notebook_id>
+```
+
 
 ## Code Quality
 

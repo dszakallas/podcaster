@@ -19,7 +19,7 @@ This repository uses Nix `devenv` for managing its development environment and d
 
 The project uses a **preset-based** configuration system for workflows and distribution.
 
-- **Workflow Presets**: Defined under `workflow:` in `podcaster.yaml`. Run them using `uv run podcaster workflow run <preset_name>`.
+- **Workflow Presets**: Defined under `workflow:` in `podcaster.yaml`. Run them using `uv run podcaster workflow run <preset_name>`. Resume them using `uv run podcaster workflow resume <notebook_id>`.
 - **Distribution Presets**: Defined under top-level `rsync:` and `plex:` keys. Use them in workflows via the `distribute:` array or manually via `uv run podcaster dist-plex <id> --preset <name>`.
 
 ## Notebook Management

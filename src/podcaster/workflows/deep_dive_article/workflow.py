@@ -38,6 +38,17 @@ def _build_completed_task(
     }
 
 
+def _resolve_date_from_dir(podcast_dir: str, notebook_id: str) -> Optional[str]:
+    notebook_dir_name = find_notebook_dir(podcast_dir, notebook_id)
+    if notebook_dir_name:
+        import re
+
+        m = re.match(r"^(\d{4}-\d{2}-\d{2})", notebook_dir_name)
+        if m:
+            return m.group(1)
+    return None
+
+
 def _task_state_for(task_id: str, lang: str, state: Optional[WorkflowState]):
     if not state or not task_id:
         return None
@@ -387,8 +398,12 @@ async def generate_download_and_tag_podcast(
             async def downloaded_gen():
                 yield downloaded
 
+            date_val = _resolve_date_from_dir(podcast_dir, notebook_id)
             async for tag in tagging.tag_artifacts(
-                downloaded_gen(), cover_path=resolved_cover_image
+                downloaded_gen(),
+                cover_path=resolved_cover_image,
+                album=state.notebook_title if state else None,
+                created_at=date_val,
             ):
                 tagged = tag
                 break
@@ -459,7 +474,7 @@ async def run(
     else:
         if notebook_id:
             raise ValueError(
-                "Cannot provide notebook_id when starting a new workflow run. Did you mean to use --resume?"
+                "Cannot provide notebook_id when starting a new workflow run. Did you mean to use workflow resume?"
             )
         if not source_file:
             raise ValueError(

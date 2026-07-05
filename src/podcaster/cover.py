@@ -8,6 +8,7 @@ from typing import Any, AsyncGenerator, Callable, Optional
 from google import genai
 from google.genai import types
 from notebooklm import NotebookLMClient
+from notebooklm.exceptions import NotebookNotFoundError
 from PIL import Image
 
 from .utils import get_or_create_notebook_dir, get_storage_path, load_config
@@ -22,9 +23,10 @@ async def create_cover_job(
     async with await NotebookLMClient.from_storage(
         storage_path, timeout=120.0
     ) as client:
-        notebook = await client.notebooks.get(notebook_id)
-        if not notebook:
-            raise ValueError(f"Notebook {notebook_id} not found")
+        try:
+            notebook = await client.notebooks.get(notebook_id)
+        except NotebookNotFoundError as e:
+            raise ValueError(f"Notebook {notebook_id} not found") from e
 
         if not image_gen_prompt:
             summary = await client.notebooks.get_summary(notebook_id)
@@ -107,9 +109,10 @@ async def download_cover_jobs(
             notebook_id = task["notebook_id"]
             task_id = task["task_id"]
 
-            notebook = await client.notebooks.get(notebook_id)
-            if not notebook:
-                raise ValueError(f"Notebook {notebook_id} not found")
+            try:
+                notebook = await client.notebooks.get(notebook_id)
+            except NotebookNotFoundError as e:
+                raise ValueError(f"Notebook {notebook_id} not found") from e
 
             job = genai_client.batches.get(name=task_id)
             if not job.dest or not job.dest.inlined_responses:

@@ -18,7 +18,8 @@ agents:
       - "{{ prompt }}"
 
 scraper:
-  ref: agy-gemini-flash
+  agent:
+    ref: agy-gemini-flash
   tool: "chrome-devtools" # name of the mcp server to use for scraping
 
 podcast_generation:

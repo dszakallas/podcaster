@@ -94,12 +94,17 @@ class ResearchConfig(BaseModel):
     import_fallback: Literal["ignore", "force", "scrape"] = "scrape"
 
 
-class ScraperConfig(BaseModel):
+class ScraperAgentConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    tool: str = "playwright"
     ref: Optional[str] = None
     command: Optional[str] = None
     args: Optional[List[str]] = None
+
+
+class ScraperConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    tool: str = "playwright"
+    agent: Optional[ScraperAgentConfig] = None
 
 
 class AgentConfig(BaseModel):

@@ -18,28 +18,32 @@ async def scrape_source(
     tool: Optional[str] = None,
     command: Optional[str] = None,
     args: Optional[List[str]] = None,
-) -> str:
-    """Scrapes a URL and returns the path to the saved text file using the configured agent tool."""
+    dry_run: bool = False,
+) -> Optional[dict]:
+    """Scrapes a URL and returns the parsed agent metadata and content dictionary."""
     from jinja2 import Template
-
-    from .utils import sanitize
 
     config = load_config()
     if tool is None:
         tool = getattr(config.scraper, "tool", "playwright")
 
     if command is None:
-        if config.scraper.ref:
-            agent_def = config.agents.get(config.scraper.ref)
-            if not agent_def:
-                raise ValueError(
-                    f"Agent reference '{config.scraper.ref}' not found in top-level agents configuration."
-                )
-            agent_command = agent_def.command
-            agent_args = agent_def.args
-        elif config.scraper.command:
-            agent_command = config.scraper.command
-            agent_args = config.scraper.args or []
+        agent_config = getattr(config.scraper, "agent", None)
+        if agent_config:
+            if agent_config.ref:
+                agent_def = config.agents.get(agent_config.ref)
+                if not agent_def:
+                    raise ValueError(
+                        f"Agent reference '{agent_config.ref}' not found in top-level agents configuration."
+                    )
+                agent_command = agent_def.command
+                agent_args = agent_def.args
+            elif agent_config.command:
+                agent_command = agent_config.command
+                agent_args = agent_config.args or []
+            else:
+                agent_command = "gemini"
+                agent_args = ["-p", "{{ prompt }}"]
         else:
             agent_command = "gemini"
             agent_args = ["-p", "{{ prompt }}"]
@@ -47,42 +51,36 @@ async def scrape_source(
         agent_command = command
         agent_args = args or []
 
-    # Ensure .tmp directory exists
-    tmp_dir = ".tmp"
-    os.makedirs(tmp_dir, exist_ok=True)
-
-    # Generate a unique filename based on the URL
-    base_name = url.split("/")[-1].split("?")[0] or "web_article"
-    safe_name = sanitize(base_name)
-    filename = os.path.join(tmp_dir, f"article_{safe_name}.txt")
-
     prompt = (
         f'Use the {tool} MCP tool to navigate to the URL "{url}". '
         "If you encounter bot detection, cookie consent banners, paywalls, or blank pages, attempt to bypass them. "
         "Useful techniques include: waiting for elements, dismissing cookie/consent popups, scrolling the page "
         "naturally, and emulating a common device viewport or user agent if supported by the tool. "
-        f'Extract the article content and save it to the file "{filename}" '
-        "in the current workspace. At the very top of the file, before the article text, include the following metadata: "
-        "URL, Title, Author, and Creation Date, each on its own line. "
+        "Extract the article content, title, author, and creation date. "
         "In addition, find all hyperlinks within the article body that are "
         "useful for content enrichment. Extract 3-5 keywords summarizing the article's topics, and find "
         "the publication date. Close the browser tab when finished. "
         "Finally, respond with a single, valid NDJSON object on a single line without whitespace in this exact "
-        'format: {"filename":"'
-        + filename.replace("\\", "\\\\")
-        + '","links":[...],"keywords":[...],"created_at":"<date>","url":"..."}. '
+        'format: {"url":"...","title":"...","author":"...","created_at":"<date>","content":"<extracted content>","links":[...],"keywords":[...]}. '
         "If any failure occurs, return instead: "
-        '{"filename":null,"error":"<error description>"}. Make sure that the browser is closed in the end. '
+        '{"error":"<error description>"}. Make sure that the browser is closed in the end. '
         "Do not output any markdown code blocks or additional text."
     )
 
-    logger.info(f"Scraping URL via {agent_command}: {url} -> {filename}")
+    logger.info(f"Scraping URL via {agent_command}: {url}")
 
     context = {"prompt": prompt}
     cmd_args = [agent_command]
     for arg in agent_args:
         rendered = Template(arg).render(context)
         cmd_args.append(rendered)
+
+    if dry_run:
+        import shlex
+
+        cmd_str = shlex.join(cmd_args)
+        logger.info(f"Would execute: {cmd_str}")
+        return None
 
     process = await asyncio.create_subprocess_exec(
         *cmd_args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
@@ -117,16 +115,26 @@ async def scrape_source(
         if res.get("error"):
             raise RuntimeError(f"Scraper reported error: {res['error']}")
 
-        final_filename = res.get("filename")
-        if not final_filename or not os.path.exists(final_filename):
-            raise FileNotFoundError(
-                f"Scraper claimed success but file {final_filename} was not found."
-            )
-
-        return final_filename
+        return res
     except Exception as e:
         logger.error(f"Failed to parse scraper output: {output}")
         raise e
+
+
+async def scrape(
+    url: str,
+    tool: Optional[str] = None,
+    command: Optional[str] = None,
+    args: Optional[List[str]] = None,
+    dry_run: bool = False,
+) -> Optional[dict]:
+    """
+    Scrapes a target URL and returns a dictionary containing the content and metadata.
+    If dry_run is True, it logs the command that would be executed and returns None.
+    """
+    return await scrape_source(
+        url, tool=tool, command=command, args=args, dry_run=dry_run
+    )
 
 
 def extract_drive_file_id(url: str) -> Optional[str]:
@@ -199,16 +207,45 @@ async def import_web_source(
             logger.info(f"Ignoring unimportable URL: {url}")
             return {"source_id": None, "ignored": True}
         elif fallback_mode == "scrape":
-            filename = await scrape_source(url, tool=tool, command=command, args=args)
-            # Upload the scraped file as a text source
-            storage_path = get_storage_path()
-            async with await NotebookLMClient.from_storage(
-                storage_path, timeout=120.0
-            ) as client:
-                source = await client.sources.add_file(
-                    notebook_id, filename, wait=True, wait_timeout=600.0
-                )
-                return {"source_id": source.id, "scraped": True, "filename": filename}
+            res = await scrape_source(url, tool=tool, command=command, args=args)
+            if not res or not res.get("content"):
+                error_msg = res.get("error") if res else "No response"
+                return {
+                    "source_id": None,
+                    "error": f"Scraping returned no content: {error_msg}",
+                }
+
+            import tempfile
+
+            from .utils import sanitize
+
+            scraped_title = res.get("title") or "Untitled"
+            scraped_author = res.get("author") or "Unknown"
+            scraped_created_at = res.get("created_at") or "Unknown"
+            scraped_url = res.get("url") or url
+
+            file_content = (
+                f"URL: {scraped_url}\n"
+                f"Title: {scraped_title}\n"
+                f"Author: {scraped_author}\n"
+                f"Creation Date: {scraped_created_at}\n\n"
+                f"{res.get('content', '')}"
+            )
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                safe_title = sanitize(scraped_title)
+                temp_filepath = os.path.join(tmpdir, f"article_{safe_title}.txt")
+                with open(temp_filepath, "w", encoding="utf-8") as f:
+                    f.write(file_content)
+
+                storage_path = get_storage_path()
+                async with await NotebookLMClient.from_storage(
+                    storage_path, timeout=120.0
+                ) as client:
+                    source = await client.sources.add_file(
+                        notebook_id, temp_filepath, wait=True, wait_timeout=600.0
+                    )
+                    return {"source_id": source.id, "scraped": True}
         # "force" continues below
 
     storage_path = get_storage_path()
