@@ -7,11 +7,15 @@ from typing import Any, AsyncGenerator, Callable, Optional
 
 from google import genai
 from google.genai import types
-from notebooklm import NotebookLMClient
 from notebooklm.exceptions import NotebookNotFoundError
 from PIL import Image
 
-from .utils import get_or_create_notebook_dir, get_storage_path, load_config
+from .utils import (
+    RetryingNotebookLMClient,
+    get_or_create_notebook_dir,
+    get_storage_path,
+    load_config,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +24,7 @@ async def create_cover_job(
     notebook_id: str, image_gen_prompt: Optional[str] = None
 ) -> dict:
     storage_path = get_storage_path()
-    async with await NotebookLMClient.from_storage(
+    async with await RetryingNotebookLMClient.from_storage(
         storage_path, timeout=120.0
     ) as client:
         try:
@@ -96,7 +100,7 @@ async def download_cover_jobs(
 
     genai_client = genai.Client()
 
-    async with await NotebookLMClient.from_storage(
+    async with await RetryingNotebookLMClient.from_storage(
         storage_path, timeout=120.0
     ) as client:
         async for task in tasks:

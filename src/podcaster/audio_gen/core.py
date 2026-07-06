@@ -8,11 +8,11 @@ import time
 from pathlib import Path
 from typing import AsyncGenerator, Optional
 
-from notebooklm import NotebookLMClient
 from notebooklm.exceptions import NotebookNotFoundError
 from notebooklm.rpc import AudioLength
 
 from ..utils import (
+    RetryingNotebookLMClient,
     get_or_create_notebook_dir,
     get_storage_path,
     load_config,
@@ -69,7 +69,7 @@ async def generate_tasks(
     plugin = load_plugin(type_name)
     inputs = plugin.Inputs.model_validate_json(format_args_json or "{}")
 
-    async with await NotebookLMClient.from_storage(
+    async with await RetryingNotebookLMClient.from_storage(
         storage_path, timeout=120.0
     ) as client:
         critical_path = Path(__file__).parent / "data" / "critical.md"
@@ -117,7 +117,11 @@ async def generate_tasks(
 
 
 async def _poll_single_task(
-    client: NotebookLMClient, notebook_id: str, task_id: str, lang_code: str, eta: float
+    client: RetryingNotebookLMClient,
+    notebook_id: str,
+    task_id: str,
+    lang_code: str,
+    eta: float,
 ) -> Optional[dict]:
     target_time = eta * 60
     start_time = time.monotonic()
@@ -130,7 +134,7 @@ async def _poll_single_task(
     while True:
         try:
             artifacts = await client.artifacts.list(notebook_id)
-            artifact = next((a for a in artifacts if a.id == task_id), None)
+            artifact = next((a for a in (artifacts or []) if a.id == task_id), None)
 
             if artifact:
                 status_val = artifact.status
@@ -180,7 +184,7 @@ async def _poll_single_task(
 async def poll_tasks(tasks: AsyncGenerator[dict, None]) -> AsyncGenerator[dict, None]:
     storage_path = get_storage_path()
 
-    async with await NotebookLMClient.from_storage(
+    async with await RetryingNotebookLMClient.from_storage(
         storage_path, timeout=120.0
     ) as client:
         pending = set()
@@ -230,7 +234,7 @@ async def download_artifacts(
 
     os.makedirs(podcast_dir, exist_ok=True)
 
-    async with await NotebookLMClient.from_storage(
+    async with await RetryingNotebookLMClient.from_storage(
         storage_path, timeout=120.0
     ) as client:
         async for art in artifacts:

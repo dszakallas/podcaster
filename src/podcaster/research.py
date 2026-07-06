@@ -6,9 +6,13 @@ import random
 import re
 from typing import Any, AsyncGenerator, Callable, List, Optional
 
-from notebooklm import NotebookLMClient
-
-from .utils import get_storage_path, load_config, retry_rpc, setup_logging
+from .utils import (
+    RetryingNotebookLMClient,
+    get_storage_path,
+    load_config,
+    retry_rpc,
+    setup_logging,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -175,7 +179,7 @@ async def import_web_source(
         if file_id:
             logger.debug(f"Detected Google Drive URL, extracting file ID: {file_id}")
             storage_path = get_storage_path()
-            async with await NotebookLMClient.from_storage(
+            async with await RetryingNotebookLMClient.from_storage(
                 storage_path, timeout=120.0
             ) as client:
                 try:
@@ -239,7 +243,7 @@ async def import_web_source(
                     f.write(file_content)
 
                 storage_path = get_storage_path()
-                async with await NotebookLMClient.from_storage(
+                async with await RetryingNotebookLMClient.from_storage(
                     storage_path, timeout=120.0
                 ) as client:
                     source = await client.sources.add_file(
@@ -249,7 +253,7 @@ async def import_web_source(
         # "force" continues below
 
     storage_path = get_storage_path()
-    async with await NotebookLMClient.from_storage(
+    async with await RetryingNotebookLMClient.from_storage(
         storage_path, timeout=120.0
     ) as client:
         try:
@@ -267,7 +271,7 @@ async def create_research_job(
     mode: str = "fast",
 ) -> dict:
     storage_path = get_storage_path()
-    async with await NotebookLMClient.from_storage(
+    async with await RetryingNotebookLMClient.from_storage(
         storage_path, timeout=120.0
     ) as client:
         # 1. Fetch source guide for keywords
@@ -350,7 +354,7 @@ async def poll_research_jobs(
     max_imports: Optional[int] = None,
 ) -> AsyncGenerator[dict, None]:
     storage_path = get_storage_path()
-    async with await NotebookLMClient.from_storage(
+    async with await RetryingNotebookLMClient.from_storage(
         storage_path, timeout=120.0
     ) as client:
         async for task in tasks:

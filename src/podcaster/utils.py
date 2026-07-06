@@ -308,3 +308,56 @@ async def retry_rpc(
                 )
             await asyncio.sleep(current_delay)
             current_delay *= backoff
+
+
+class RetryingResourceWrapper:
+    def __init__(self, resource, logger=None):
+        self._resource = resource
+        self._logger = logger or logging.getLogger("notebooklm.client")
+
+    def __getattr__(self, name):
+        attr = getattr(self._resource, name)
+        if callable(attr):
+            is_idempotent = (
+                name in ("get", "list", "poll", "wait_until_ready")
+                or name.startswith("get_")
+                or name.startswith("list_")
+                or name.startswith("poll_")
+                or "_get" in name
+                or "_list" in name
+                or "_poll" in name
+            )
+            if is_idempotent:
+
+                @functools.wraps(attr)
+                async def wrapped(*args, **kwargs):
+                    return await retry_rpc(attr, *args, logger=self._logger, **kwargs)
+
+                return wrapped
+        return attr
+
+
+class RetryingNotebookLMClient:
+    @classmethod
+    async def from_storage(cls, storage_path, timeout=120.0, logger=None):
+        from notebooklm import NotebookLMClient
+
+        client = await NotebookLMClient.from_storage(storage_path, timeout=timeout)
+        return cls(client, logger=logger)
+
+    def __init__(self, client, logger=None):
+        self._client = client
+        self._logger = logger or logging.getLogger("notebooklm.client")
+
+    def __getattr__(self, name):
+        attr = getattr(self._client, name)
+        if name in ("notebooks", "sources", "artifacts", "research", "chat"):
+            return RetryingResourceWrapper(attr, logger=self._logger)
+        return attr
+
+    async def __aenter__(self):
+        await self._client.__aenter__()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        return await self._client.__aexit__(exc_type, exc_val, exc_tb)

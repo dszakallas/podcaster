@@ -2,10 +2,14 @@ import logging
 import os
 from typing import Optional
 
-from notebooklm import NotebookLMClient
 from notebooklm.exceptions import NotebookNotFoundError
 
-from .utils import get_or_create_notebook_dir, get_storage_path, load_config
+from .utils import (
+    RetryingNotebookLMClient,
+    get_or_create_notebook_dir,
+    get_storage_path,
+    load_config,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +36,7 @@ async def upload_source(
     else:
         logger.debug(f"Uploading file source: {source_file}...")
         storage_path = get_storage_path()
-        async with await NotebookLMClient.from_storage(
+        async with await RetryingNotebookLMClient.from_storage(
             storage_path, timeout=120.0
         ) as client:
             source = await client.sources.add_file(
@@ -60,7 +64,7 @@ async def init_notebook(
         podcast_dir = config.podcast_dir
 
     if from_source:
-        async with await NotebookLMClient.from_storage(
+        async with await RetryingNotebookLMClient.from_storage(
             storage_path, timeout=120.0
         ) as client:
             try:
@@ -177,7 +181,7 @@ async def init_notebook(
                 "Either title or notebook_id must be provided when not initializing from source."
             )
 
-        async with await NotebookLMClient.from_storage(
+        async with await RetryingNotebookLMClient.from_storage(
             storage_path, timeout=120.0
         ) as client:
             if notebook_id:
