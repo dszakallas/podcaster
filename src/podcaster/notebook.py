@@ -119,7 +119,7 @@ async def init_notebook(
                             chat_res = await client.chat.ask(
                                 created_notebook_id,
                                 "Based on the uploaded source, suggest a concise, catchy, and professional title for this notebook/podcast. "
-                                "Do not include any introductory or concluding text. Respond ONLY with the suggested title.",
+                                "Do not include any introductory or concluding text or any citations. Respond ONLY with the suggested title.",
                                 source_ids=[source_id],
                             )
                             derived_title = (
