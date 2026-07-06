@@ -292,12 +292,29 @@ async def retry_rpc(
                 raise ValueError(
                     "retry_rpc expects an async callable/function, not a coroutine object"
                 )
-        except (NetworkError, RPCError, httpx.HTTPError) as e:
+        except Exception as e:
             class_name = e.__class__.__name__
+            is_transient = (
+                isinstance(e, (NetworkError, RPCError, httpx.HTTPError))
+                or "APIError" in class_name
+                or "ServerError" in class_name
+            )
+            if not is_transient:
+                raise e
+
             if "NotFound" in class_name:
                 raise e
             if isinstance(e, httpx.HTTPStatusError) and e.response.status_code < 500:
                 raise e
+            if "APIError" in class_name or "ServerError" in class_name:
+                code = getattr(e, "code", None)
+                if (
+                    code is not None
+                    and isinstance(code, int)
+                    and code < 500
+                    and code != 429
+                ):
+                    raise e
 
             if attempt == retries:
                 raise e

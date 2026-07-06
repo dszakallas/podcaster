@@ -15,6 +15,7 @@ from .utils import (
     get_or_create_notebook_dir,
     get_storage_path,
     load_config,
+    retry_rpc,
 )
 
 logger = logging.getLogger(__name__)
@@ -43,7 +44,8 @@ async def create_cover_job(
         genai_client = genai.Client()
         logger.debug("Submitting batch job for image generation...")
 
-        batch_job = genai_client.batches.create(
+        batch_job = await retry_rpc(
+            genai_client.batches.create,
             model="gemini-3.1-flash-image",
             src=[
                 types.InlinedRequest(
@@ -59,6 +61,7 @@ async def create_cover_job(
                     ),
                 )
             ],
+            logger=logger,
         )
 
         return {
@@ -78,7 +81,7 @@ async def poll_cover_jobs(
         task_id = task["task_id"]
         logger.debug(f"Polling batch job: {task_id}")
         while True:
-            job = genai_client.batches.get(name=task_id)
+            job = await retry_rpc(genai_client.batches.get, name=task_id, logger=logger)
             state_str = str(job.state)
             if "SUCCEEDED" in state_str:
                 yield {**task, "status": "completed"}
@@ -118,7 +121,7 @@ async def download_cover_jobs(
             except NotebookNotFoundError as e:
                 raise ValueError(f"Notebook {notebook_id} not found") from e
 
-            job = genai_client.batches.get(name=task_id)
+            job = await retry_rpc(genai_client.batches.get, name=task_id, logger=logger)
             if not job.dest or not job.dest.inlined_responses:
                 raise RuntimeError(
                     "Batch job succeeded but no results found in inlined_responses."
