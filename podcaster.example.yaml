@@ -1,5 +1,6 @@
 podcast_dir: "podcasts"
 agents:
+  # agents are currently needed only for scraping
   agy-gemini-flash:
     command: "agy"
     args:
@@ -18,13 +19,13 @@ agents:
       - "{{ prompt }}"
 
 scraper:
+  tool: "chrome-devtools"  # name of the mcp server to use for scraping
   agent:
-    ref: agy-gemini-flash
-  tool: "chrome-devtools" # name of the mcp server to use for scraping
+    ref: agy-gemini-flash  # reference to an agent configuration from above
 
 podcast_generation:
   languages: ["en", "hu"]
-  length: "default" # options: short, default, long, auto
+  length: "default"  # short, default, long, or auto (inferred from article)
 
 podcast_tags:
   album_artist: "Your Name"
@@ -43,39 +44,39 @@ workflow:
     generate_cover:
       enable: true
     transcribe:
-      enable: false
-      languages: ["cs"]
+      enable: true
+      languages: ["cs", "en"]
     distribute:
       - type: plex
-        ref: my-media-server
+        ref: my-media-server  # reference to a plex configuration
       - type: rsync
-        ref: backup-drive
+        ref: gdrive-backup  # reference to a rsync configuration
 
 rsync:
   main-server:
     method: "rsync"
-    destination: "user@host:/path/to/podcasts"
-  backup-drive:
-    method: "rclone"
-    destination: "gdrive:backup/podcasts"
+    destination: "user@host:/mnt/podcasts"
+  gdrive-backup:
+    method: "rclone"  # rclone supported for uploading to cloud storage
+    destination: "gdrive:podcasts"
 
 plex:
   my-media-server:
     rsync:
-      enabled: true
-      ref: main-server
-    section_id: 123
-    server_library_path: "/path/on/server/to/podcasts"
+      enabled: true  # we can do rsync as part of plex sync
+      ref: main-server 
+    section_id: 14
+    server_library_path: "/mnt/podcasts"
     server_url: "http://localhost:32400"
     token: "your-plex-token"
 
 gcp:
-  project_id: "your-gcp-project-id"
+  project_id: "your-gcp-project"
   location: "us-central1"
-  gcs_bucket: "your-gcs-bucket-name"
+  gcs_bucket: "your-bucket"
 
 research:
-  unimportables:
+  unimportables:  # sites blocked in NotebookLM, needs fallback import method
     - "example\\.com"
     - "another-example\\.com"
   import_fallback: "scrape"
