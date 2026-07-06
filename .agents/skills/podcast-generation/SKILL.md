@@ -13,7 +13,7 @@ The most efficient way to generate a podcast is using the **End-to-End (E2E) pip
 
 1. **Identify the Source**: Determine the URL or local file path of the article.
 2. **Execute E2E Command**: Run the workflow in the **background** (`is_background: true`) to prevent session timeouts.
-   - **Command**: `uv run podcaster workflow run "${preset_name}" "${source_path_or_url}" --title "${title}"` (The `--title` parameter is optional; if not set, the title is derived from the notebook/source.)
+   - **Command**: `podcaster workflow run "${preset_name}" "${source_path_or_url}" --title "${title}"` (The `--title` parameter is optional; if not set, the title is derived from the notebook/source.)
    - **Preset Selection**: Use a named preset from `podcaster.yaml` (e.g., `default`, `deep-dive-default`).
    - **Bypassing Blocks**: The workflow automatically detects paywalled sites and uses a Playwright-based scraper to bypass restrictions.
    - **Capabilities**: Automatically handles research enrichment, 1:1 album art, multi-language generation, ID3 tagging, synchronized LRC transcription, parallel multi-target distribution (rsync or rclone), and Plex library refresh.
@@ -29,59 +29,59 @@ When generating podcasts for an already existing notebook, you MUST use the esta
 3. Synchronized LRC files are generated seamlessly.
 
 ```bash
-uv run podcaster podcast create "${notebook_id}" "main-article-with-author" -l "${lang_code}" \
-  | uv run podcaster podcast poll \
-  | uv run podcaster podcast download \
-  | uv run podcaster tag-podcast --cover "${cover_path}" \
-  | uv run podcaster transcription create \
-  | uv run podcaster transcription poll \
-  | uv run podcaster transcription download
+podcaster podcast create "${notebook_id}" "main-article-with-author" -l "${lang_code}" \
+  | podcaster podcast poll \
+  | podcaster podcast download \
+  | podcaster tag-podcast --cover "${cover_path}" \
+  | podcaster transcription create \
+  | podcaster transcription poll \
+  | podcaster transcription download
 ```
 
 ### Recovering an Already Generated Artifact
 If a podcast was successfully generated in NotebookLM but the local workflow failed to download or tag it, you can manually inject a JSON schema into the pipeline to complete the process. First, list artifacts to get the `artifact_id`:
 
 ```bash
-uv run notebooklm artifact list -n "${notebook_id}" --json
+notebooklm artifact list -n "${notebook_id}" --json
 ```
 
 Then, inject the artifact details into the download pipeline via `--arg-json`. Note the required `"generate-podcast": {"notebook_id": "..."}` metadata schema:
 
 ```bash
-uv run podcaster podcast download --arg-json '{"artifact_id": "YOUR_ARTIFACT_ID", "notebook_id": "YOUR_NOTEBOOK_ID", "type_id": "audio", "title": "The Title", "status": "completed", "generate-podcast": {"notebook_id": "YOUR_NOTEBOOK_ID"}}' | uv run podcaster tag-podcast --cover "./path/to/cover.png"
+podcaster podcast download --arg-json '{"artifact_id": "YOUR_ARTIFACT_ID", "notebook_id": "YOUR_NOTEBOOK_ID", "type_id": "audio", "title": "The Title", "status": "completed", "generate-podcast": {"notebook_id": "YOUR_NOTEBOOK_ID"}}' | podcaster tag-podcast --cover "./path/to/cover.png"
 ```
 
 ### Manual Plex Distribution
 To distribute a specific notebook's generated podcasts to your Plex library using a named preset:
 ```bash
-uv run podcaster dist-plex "${notebook_id}" --preset my-media-server
+podcaster dist-plex "${notebook_id}" --preset my-media-server
 ```
 
 ### Manual Remote Distribution
 To distribute a podcast to a remote destination using a named preset:
 ```bash
-uv run podcaster dist-rsync "${notebook_id}" --preset backup-drive
+podcaster dist-rsync "${notebook_id}" --preset backup-drive
 ```
 
 ### Manual Notebook Initialization
 You can initialize a local notebook directory and/or create the remote notebook using:
 - **From a source file (recommended)**: Derives the title, creates the remote notebook, uploads the source, renames the remote notebook, and creates the local directory. If it fails before successful upload, cleans up (deletes) the remote notebook.
   ```bash
-  uv run podcaster init-podcast-notebook --from-source ./article.txt
+  podcaster init-podcast-notebook --from-source ./article.txt
   ```
 - **With a specific title**:
   ```bash
-  uv run podcaster init-podcast-notebook --title "My Title"
+  podcaster init-podcast-notebook --title "My Title"
   ```
 - **Using an existing remote notebook**:
   ```bash
-  uv run podcaster init-podcast-notebook --notebook-id <notebook_id>
+  podcaster init-podcast-notebook --notebook-id <notebook_id>
   ```
 
 ### Manual Web Import & Research
 To manually import a URL and trigger an AI research deep-dive:
-1. **Import**: `uv run podcaster import-web "${notebook_id}" "${url}"`
-2. Research: `uv run podcaster research create "${notebook_id}" "${source_id}" --mode deep | uv run podcaster research poll`
+1. **Import**: `podcaster import-web "${notebook_id}" "${url}"`
+2. Research: `podcaster research create "${notebook_id}" "${source_id}" --mode deep | podcaster research poll`
 
 ## Configuration & Standards
 - **Settings**: Primary defaults (languages, length, GCP location, unimportable regexes) are managed in `podcaster.yaml`. Workflow options use a nested schema (e.g., `workflow.deep_dive_article.generate_cover.enable`, `workflow.deep_dive_article.transcribe.enable`, `workflow.deep_dive_article.rsync.destination`).
