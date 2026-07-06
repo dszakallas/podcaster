@@ -35,16 +35,7 @@ in
     inputs.dotfiles-common.devenvModules.agents
   ];
 
-  env.PLAYWRIGHT_BROWSERS_PATH = "${config.devenv.root}/.playwright/browsers";
-  env.PLAYWRIGHT_USER_DATA_DIR = "${config.devenv.root}/.playwright/user-data";
-  env.PLAYWRIGHT_OUTPUT_DIR = "${config.devenv.root}/.playwright/output";
 
-  tasks."playwright:install" = {
-    exec = "${pkgs.uv}/bin/uv run playwright install chromium";
-    before = [ "devenv:enterShell" ];
-    after = [ "devenv:python:uv" ];
-    env.PLAYWRIGHT_BROWSERS_PATH = "${config.devenv.root}/.playwright/browsers";
-  };
 
   agents = {
     mcp = {
