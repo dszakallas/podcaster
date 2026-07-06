@@ -62,7 +62,7 @@ agents:
 scraper:
   tool: "chrome-devtools" # name of the mcp server to use for scraping
   agent:
-    ref: agy-gemini-flash
+    ref: agy-gemini-flash # reference to an agent configuration from above
 
 podcast_generation:
   languages: ["en", "hu"]
@@ -89,23 +89,23 @@ workflow:
       languages: ["cs", "en"]
     distribute:
       - type: plex
-        ref: my-media-server
+        ref: my-media-server  # reference to a plex configuration
       - type: rsync
-        ref: gdrive-backup
+        ref: gdrive-backup  # reference to a rsync configuration
 
 rsync:
   main-server:
     method: "rsync"
     destination: "user@host:/mnt/podcasts"
   gdrive-backup:
-    method: "rclone"
+    method: "rclone" # rclone supported for uploading to cloud storage
     destination: "gdrive:podcasts"
 
 plex:
   my-media-server:
     rsync:
-      enabled: true
-      ref: main-server
+      enabled: true # we can do rsync as part of plex sync
+      ref: main-server 
     section_id: 14
     server_library_path: "/mnt/podcasts"
     server_url: "http://localhost:32400"
@@ -117,7 +117,7 @@ gcp:
   gcs_bucket: "your-bucket"
 
 research:
-  unimportables:
+  unimportables: # sites blocked in NotebookLM, needs fallback import method
     - "example\\.com"
     - "another-example\\.com"
   import_fallback: "scrape"
