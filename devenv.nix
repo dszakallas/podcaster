@@ -52,7 +52,12 @@
     before = [ "devenv:enterShell" ];
     after = [ "devenv:python:uv" ];
     env.PLAYWRIGHT_BROWSERS_PATH = "${config.devenv.root}/.playwright/browsers";
+    env.PLAYWRIGHT_USER_DATA_DIR = "${config.devenv.root}/.playwright/user-data";
   };
+
+  enterShell = ''
+    export PATH="$DEVENV_ROOT/.venv/bin:$PATH"
+  '';
 
   profiles = {
     agents.module = import ./devenv/profiles/agents args;
