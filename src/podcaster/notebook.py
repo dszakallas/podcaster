@@ -72,88 +72,105 @@ async def init_notebook(
                 logger.error(f"Failed to create remote notebook: {e}")
                 raise e
 
-            # Re-fetch to get created_at if it was None
-            if not notebook.created_at:
-                try:
-                    notebook = await client.notebooks.get(created_notebook_id)
-                except Exception as e:
-                    logger.warning(f"Failed to fetch notebook details: {e}")
-
-            # Upload the first source
             try:
-                source_id = await upload_source(
-                    created_notebook_id, from_source, title=title
+                # Re-fetch to get created_at if it was None
+                if not notebook.created_at:
+                    try:
+                        notebook = await client.notebooks.get(created_notebook_id)
+                    except Exception as e:
+                        logger.warning(f"Failed to fetch notebook details: {e}")
+
+                # Upload the first source
+                try:
+                    source_id = await upload_source(
+                        created_notebook_id, from_source, title=title
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"Failed to upload first source. Cleaning up remote notebook {created_notebook_id}..."
+                    )
+                    try:
+                        await client.notebooks.delete(created_notebook_id)
+                        logger.info("Remote notebook deleted successfully.")
+                    except Exception as delete_err:
+                        logger.error(f"Failed to delete remote notebook: {delete_err}")
+                    raise RuntimeError(
+                        f"Failed to initialize notebook: first source upload failed. {e}"
+                    ) from e
+
+                # Derive title if not provided
+                derived_title = title
+                if not derived_title:
+                    # Re-fetch notebook details again to see if title got populated
+                    try:
+                        notebook = await client.notebooks.get(created_notebook_id)
+                        derived_title = notebook.title
+                    except Exception as e:
+                        logger.warning(f"Failed to re-fetch notebook title: {e}")
+
+                    # If still empty, prompt the notebook to suggest a title based on the uploaded source
+                    if not derived_title:
+                        try:
+                            logger.info("Prompting notebook to generate a title...")
+                            chat_res = await client.chat.ask(
+                                created_notebook_id,
+                                "Based on the uploaded source, suggest a concise, catchy, and professional title for this notebook/podcast. "
+                                "Do not include any introductory or concluding text. Respond ONLY with the suggested title.",
+                                source_ids=[source_id],
+                            )
+                            derived_title = (
+                                chat_res.answer.strip().strip('"').strip("'").strip()
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                f"Failed to prompt notebook for a title: {e}"
+                            )
+
+                    if not derived_title:
+                        derived_title = "Notebook"
+
+                    # Update remote notebook title with derived title so it's not empty
+                    try:
+                        await client.notebooks.rename(
+                            created_notebook_id, derived_title
+                        )
+                        logger.info(
+                            f"Renamed remote notebook to derived title: '{derived_title}'"
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            f"Failed to rename remote notebook to '{derived_title}': {e}"
+                        )
+
+                # Now create the local directory
+                logger.info(
+                    f"Initializing directory for notebook {created_notebook_id} (title: '{derived_title}') in {podcast_dir}..."
                 )
-            except Exception as e:
+                notebook_dir = get_or_create_notebook_dir(
+                    podcast_dir, created_notebook_id, derived_title, notebook.created_at
+                )
+
+                return {
+                    "notebook_id": created_notebook_id,
+                    "created_at": (
+                        notebook.created_at.isoformat() if notebook.created_at else None
+                    ),
+                    "local_dir": os.path.basename(notebook_dir),
+                    "derived_title": derived_title,
+                    "source_id": source_id,
+                }
+            except Exception:
+                raise
+            except BaseException:
                 logger.error(
-                    f"Failed to upload first source. Cleaning up remote notebook {created_notebook_id}..."
+                    f"Notebook initialization interrupted. Cleaning up remote notebook {created_notebook_id}..."
                 )
                 try:
                     await client.notebooks.delete(created_notebook_id)
                     logger.info("Remote notebook deleted successfully.")
                 except Exception as delete_err:
                     logger.error(f"Failed to delete remote notebook: {delete_err}")
-                raise RuntimeError(
-                    f"Failed to initialize notebook: first source upload failed. {e}"
-                ) from e
-
-            # Derive title if not provided
-            derived_title = title
-            if not derived_title:
-                # Re-fetch notebook details again to see if title got populated
-                try:
-                    notebook = await client.notebooks.get(created_notebook_id)
-                    derived_title = notebook.title
-                except Exception as e:
-                    logger.warning(f"Failed to re-fetch notebook title: {e}")
-
-                # If still empty, prompt the notebook to suggest a title based on the uploaded source
-                if not derived_title:
-                    try:
-                        logger.info("Prompting notebook to generate a title...")
-                        chat_res = await client.chat.ask(
-                            created_notebook_id,
-                            "Based on the uploaded source, suggest a concise, catchy, and professional title for this notebook/podcast. "
-                            "Do not include any introductory or concluding text. Respond ONLY with the suggested title.",
-                            source_ids=[source_id],
-                        )
-                        derived_title = (
-                            chat_res.answer.strip().strip('"').strip("'").strip()
-                        )
-                    except Exception as e:
-                        logger.warning(f"Failed to prompt notebook for a title: {e}")
-
-                if not derived_title:
-                    derived_title = "Notebook"
-
-                # Update remote notebook title with derived title so it's not empty
-                try:
-                    await client.notebooks.rename(created_notebook_id, derived_title)
-                    logger.info(
-                        f"Renamed remote notebook to derived title: '{derived_title}'"
-                    )
-                except Exception as e:
-                    logger.warning(
-                        f"Failed to rename remote notebook to '{derived_title}': {e}"
-                    )
-
-            # Now create the local directory
-            logger.info(
-                f"Initializing directory for notebook {created_notebook_id} (title: '{derived_title}') in {podcast_dir}..."
-            )
-            notebook_dir = get_or_create_notebook_dir(
-                podcast_dir, created_notebook_id, derived_title, notebook.created_at
-            )
-
-            return {
-                "notebook_id": created_notebook_id,
-                "created_at": (
-                    notebook.created_at.isoformat() if notebook.created_at else None
-                ),
-                "local_dir": os.path.basename(notebook_dir),
-                "derived_title": derived_title,
-                "source_id": source_id,
-            }
+                raise
     else:
         if not title and not notebook_id:
             raise ValueError(
