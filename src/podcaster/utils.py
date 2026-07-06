@@ -318,8 +318,8 @@ class RetryingResourceWrapper:
     def __getattr__(self, name):
         attr = getattr(self._resource, name)
         if callable(attr):
-            is_idempotent = (
-                name in ("get", "list", "poll", "wait_until_ready", "download")
+            is_safe = (
+                name in ("get", "list", "poll", "wait_until_ready", "download", "ask")
                 or name.startswith("get_")
                 or name.startswith("list_")
                 or name.startswith("poll_")
@@ -329,7 +329,7 @@ class RetryingResourceWrapper:
                 or "_poll" in name
                 or "_download" in name
             )
-            if is_idempotent:
+            if is_safe:
 
                 @functools.wraps(attr)
                 async def wrapped(*args, **kwargs):

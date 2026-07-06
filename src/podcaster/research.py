@@ -10,7 +10,6 @@ from .utils import (
     RetryingNotebookLMClient,
     get_storage_path,
     load_config,
-    retry_rpc,
     setup_logging,
 )
 
@@ -276,9 +275,7 @@ async def create_research_job(
     ) as client:
         # 1. Fetch source guide for keywords
         logger.debug(f"Fetching guide for source {source_id}...")
-        guide = await retry_rpc(
-            client.sources.get_guide, notebook_id, source_id, logger=logger
-        )
+        guide = await client.sources.get_guide(notebook_id, source_id)
         keywords = guide.get("keywords", [])
         if not keywords:
             logger.debug(f"No keywords found in guide for source {source_id}.")
@@ -295,12 +292,8 @@ async def create_research_job(
             "2. Suggest a podcast length for a deep dive into this article. Choose ONLY one from: 'short', 'default', 'long'.\n"
             'Respond in NDJSON format: {"summary": "...", "suggested_length": "..."}'
         )
-        summary_res = await retry_rpc(
-            client.chat.ask,
-            notebook_id,
-            summary_q,
-            source_ids=[source_id],
-            logger=logger,
+        summary_res = await client.chat.ask(
+            notebook_id, summary_q, source_ids=[source_id]
         )
 
         try:
@@ -329,9 +322,7 @@ async def create_research_job(
         logger.debug(f"Starting research with prompt: {prompt} (mode: {mode})")
 
         # 4. Start research
-        job = await retry_rpc(
-            client.research.start, notebook_id, prompt, mode=mode, logger=logger
-        )
+        job = await client.research.start(notebook_id, prompt, mode=mode)
         if not job:
             raise RuntimeError("Failed to start research job.")
 
