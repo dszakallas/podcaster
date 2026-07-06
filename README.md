@@ -1,6 +1,6 @@
 # Podcaster
 
-Automation tools for generating podcasts from articles and documents using NotebookLM and Google Gemini.
+Automation tools for generating podcasts from articles and documents using NotebookLM using `notebooklm-py`.
 
 ## Features
 
