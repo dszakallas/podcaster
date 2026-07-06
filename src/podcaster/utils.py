@@ -262,3 +262,49 @@ def rclone_copy_dir(src: str, dst: str):
     # Note: dst might be a remote like 'remote:path/to/dir'
     cmd = ["rclone", "copy", "--include", "*.m4a", "--include", "*.lrc", src, dst]
     subprocess.run(cmd, check=True)
+
+
+async def retry_rpc(
+    coro_or_func,
+    *args,
+    retries: int = 3,
+    delay: float = 1.0,
+    backoff: float = 2.0,
+    logger: Optional[logging.Logger] = None,
+    **kwargs,
+):
+    """Retries a coroutine or async function call with exponential backoff on transient errors."""
+    import asyncio
+
+    import httpx
+    from notebooklm.exceptions import NetworkError, RPCError
+
+    current_delay = delay
+    for attempt in range(1, retries + 1):
+        try:
+            if callable(coro_or_func):
+                res = coro_or_func(*args, **kwargs)
+                if asyncio.iscoroutine(res):
+                    return await res
+                return res
+            else:
+                raise ValueError(
+                    "retry_rpc expects an async callable/function, not a coroutine object"
+                )
+        except (NetworkError, RPCError, httpx.HTTPError) as e:
+            class_name = e.__class__.__name__
+            if "NotFound" in class_name:
+                raise e
+            if isinstance(e, httpx.HTTPStatusError) and e.response.status_code < 500:
+                raise e
+
+            if attempt == retries:
+                raise e
+
+            if logger:
+                logger.warning(
+                    f"Transient RPC/Network error (attempt {attempt}/{retries}): {e}. "
+                    f"Retrying in {current_delay:.2f} seconds..."
+                )
+            await asyncio.sleep(current_delay)
+            current_delay *= backoff
