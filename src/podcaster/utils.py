@@ -319,13 +319,15 @@ class RetryingResourceWrapper:
         attr = getattr(self._resource, name)
         if callable(attr):
             is_idempotent = (
-                name in ("get", "list", "poll", "wait_until_ready")
+                name in ("get", "list", "poll", "wait_until_ready", "download")
                 or name.startswith("get_")
                 or name.startswith("list_")
                 or name.startswith("poll_")
+                or name.startswith("download_")
                 or "_get" in name
                 or "_list" in name
                 or "_poll" in name
+                or "_download" in name
             )
             if is_idempotent:
 
