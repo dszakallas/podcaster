@@ -39,6 +39,7 @@ class StructuredFormatter(logging.Formatter):
             "stack_info",
             "thread",
             "threadName",
+            "taskName",
         }
         extra = {k: v for k, v in record.__dict__.items() if k not in standard_attrs}
         if extra:
