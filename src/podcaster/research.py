@@ -10,6 +10,7 @@ from .utils import (
     RetryingNotebookLMClient,
     get_storage_path,
     load_config,
+    parse_duration_minutes,
     setup_logging,
 )
 
@@ -283,14 +284,16 @@ async def create_research_job(
         else:
             topic = ", ".join(keywords)
 
-        # 2. Get one-sentence summary and suggested length
+        # 2. Get one-sentence summary and suggested duration
         logger.debug(
-            f"Generating summary and length suggestion for source {source_id}..."
+            f"Generating summary and duration suggestion for source {source_id}..."
         )
         summary_q = (
             "1. Summarize this source in exactly one sentence with dates for important events.\n"
-            "2. Suggest a podcast length for a deep dive into this article. Choose ONLY one from: 'short', 'default', 'long'.\n"
-            'Respond in NDJSON format: {"summary": "...", "suggested_length": "..."}'
+            "2. Suggest a duration for a deep-dive podcast about this article. "
+            "Reply with a plain duration string like '15 minutes' or '1 hour 5 minutes'. "
+            "Typical range: 10–45 minutes.\n"
+            'Respond in NDJSON format: {"summary": "...", "suggested_duration": "..."}'
         )
         summary_res = await client.chat.ask(
             notebook_id, summary_q, source_ids=[source_id]
@@ -303,19 +306,22 @@ async def create_research_job(
             if match:
                 data = json.loads(match.group(0))
                 summary = data.get("summary", answer_text)
-                suggested_length = data.get("suggested_length", "long")
+                suggested_duration = data.get("suggested_duration", "")
             else:
                 summary = answer_text
-                suggested_length = "long"
+                suggested_duration = ""
         except Exception:
             logger.warning(
-                "Failed to parse summary and length from response, using defaults."
+                "Failed to parse summary and duration from response, using defaults."
             )
             summary = summary_res.answer
-            suggested_length = "long"
+            suggested_duration = ""
 
-        if suggested_length not in ["short", "default", "long"]:
-            suggested_length = "long"
+        if not suggested_duration or parse_duration_minutes(suggested_duration) is None:
+            logger.warning(
+                f"Could not parse suggested duration {suggested_duration!r}, defaulting to 20 minutes."
+            )
+            suggested_duration = "20 minutes"
 
         # 3. Assemble research prompt
         prompt = f"Topic: {topic}. Context: {summary}"
@@ -334,7 +340,7 @@ async def create_research_job(
             "task_id": task_id,
             "topic": topic,
             "summary": summary,
-            "suggested_length": suggested_length,
+            "suggested_duration": suggested_duration,
             "status": "pending",
             "type": "research",
         }
@@ -410,7 +416,7 @@ async def research_from_source(
     task_id: Optional[str] = None,
     topic: Optional[str] = None,
     summary: Optional[str] = None,
-    suggested_length: Optional[str] = None,
+    suggested_duration: Optional[str] = None,
     on_start_callback: Optional[Callable[[str, str, str, str], Any]] = None,
 ) -> dict:
     if verbose:
@@ -421,9 +427,9 @@ async def research_from_source(
         task_id = task["task_id"]
         topic = task["topic"]
         summary = task["summary"]
-        suggested_length = task["suggested_length"]
+        suggested_duration = task["suggested_duration"]
         if on_start_callback:
-            await on_start_callback(task_id, topic, summary, suggested_length)
+            await on_start_callback(task_id, topic, summary, suggested_duration)
 
     async def task_gen():
         yield {
@@ -432,7 +438,7 @@ async def research_from_source(
             "task_id": task_id,
             "topic": topic,
             "summary": summary,
-            "suggested_length": suggested_length,
+            "suggested_duration": suggested_duration,
         }
 
     res = None

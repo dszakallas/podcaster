@@ -23,7 +23,7 @@ class Inputs(BaseModel):
 async def get_prompt(
     client: NotebookLMClient, inputs: Inputs, params: "AudioGenParams"
 ) -> str:
-    from ....core import DURATION_MAP
+    duration = params.length
 
     # Fetch source details from NotebookLM
     source = await client.sources.get(params.notebook_id, inputs.source_id)
@@ -40,8 +40,6 @@ async def get_prompt(
         raise RuntimeError(
             f"Could not retrieve topic summary for source {inputs.source_id}"
         )
-
-    duration = DURATION_MAP.get(params.length, params.length)
 
     summary_instruction = ""
     if inputs.segmented_summaries == "moderate":

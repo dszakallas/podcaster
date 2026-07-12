@@ -265,6 +265,54 @@ def rclone_copy_dir(src: str, dst: str):
     subprocess.run(cmd, check=True)
 
 
+# Presets expressed as canonical duration strings.
+_PRESET_DURATIONS: dict[str, str] = {
+    "short": "10 minutes",
+    "default": "20 minutes",
+    "long": "30 minutes",
+}
+
+_DURATION_RE = r"""(?x)
+    ^\s*
+    (?:(\d+)\s*h(?:ours?)?)?\s*   # optional hours
+    (?:(\d+)\s*m(?:in(?:utes?)?)?) # required minutes
+    \s*$
+"""
+
+
+def parse_duration_minutes(duration: str) -> Optional[int]:
+    """Parse a human-readable duration string into total minutes.
+
+    Accepts formats like '10 minutes', '1 hour 30 minutes', '45m', '1h 15min'.
+    Returns None if unparseable.
+    """
+    import re
+
+    m = re.match(_DURATION_RE, duration.strip(), re.VERBOSE | re.IGNORECASE)
+    if not m:
+        return None
+    hours = int(m.group(1) or 0)
+    minutes = int(m.group(2) or 0)
+    return hours * 60 + minutes
+
+
+def resolve_duration(length: str) -> str:
+    """Normalise a length value to a duration string.
+
+    Accepts a preset name ('short', 'default', 'long') or any parseable
+    duration string ('23 minutes', '1 hour 5 minutes', …).  Returns the
+    canonical duration string, or raises ValueError for unrecognised input.
+    """
+    if length in _PRESET_DURATIONS:
+        return _PRESET_DURATIONS[length]
+    if parse_duration_minutes(length) is not None:
+        return length
+    raise ValueError(
+        f"Invalid length {length!r}: expected a preset ('short', 'default', 'long') "
+        "or a duration string (e.g. '23 minutes', '1 hour 10 minutes')."
+    )
+
+
 async def retry_rpc(
     coro_or_func,
     *args,

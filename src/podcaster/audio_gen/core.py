@@ -16,21 +16,34 @@ from ..utils import (
     get_or_create_notebook_dir,
     get_storage_path,
     load_config,
+    parse_duration_minutes,
+    resolve_duration,
     sanitize,
 )
 from .params import AudioGenParams
 
 logger = logging.getLogger(__name__)
 
-LENGTH_MAP = {
-    "short": AudioLength.SHORT,
-    "default": AudioLength.DEFAULT,
-    "long": AudioLength.LONG,
-}
-
-DURATION_MAP = {"short": "10 minutes", "default": "20 minutes", "long": "30 minutes"}
 
 LANGUAGES_SUPPORTING_LENGTH = {"en"}
+
+
+def duration_to_audio_length(duration_str: str) -> AudioLength:
+    """Map a duration string to the nearest NotebookLM AudioLength bucket.
+
+    Thresholds (in minutes):
+      <= 12  -> SHORT
+      <= 25  -> DEFAULT
+      >  25  -> LONG
+    """
+    minutes = parse_duration_minutes(duration_str)
+    if minutes is None:
+        return AudioLength.DEFAULT
+    if minutes <= 12:
+        return AudioLength.SHORT
+    if minutes <= 25:
+        return AudioLength.DEFAULT
+    return AudioLength.LONG
 
 
 def load_plugin(type_name: str):
@@ -64,6 +77,8 @@ async def generate_tasks(
     if not length_str:
         length_str = gen_defaults.length
 
+    length_str = resolve_duration(length_str)
+
     storage_path = get_storage_path()
 
     plugin = load_plugin(type_name)
@@ -81,13 +96,13 @@ async def generate_tasks(
         if dry_run:
             return
 
-        ETA_MAP = {"short": 8.0, "default": 12.0, "long": 16.0}
-        eta = ETA_MAP.get(length_str, 10.0)
+        minutes = parse_duration_minutes(length_str) or 20
+        eta = max(8.0, minutes * 0.5)
 
         for lang_code in languages:
-            audio_length = LENGTH_MAP[length_str]
-            if lang_code not in LANGUAGES_SUPPORTING_LENGTH and length_str == "long":
-                audio_length = AudioLength.DEFAULT
+            audio_length = duration_to_audio_length(length_str)
+            if lang_code not in LANGUAGES_SUPPORTING_LENGTH:
+                audio_length = min(audio_length, AudioLength.DEFAULT)
 
             try:
                 status = await client.artifacts.generate_audio(

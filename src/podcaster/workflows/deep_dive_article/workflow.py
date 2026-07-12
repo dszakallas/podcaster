@@ -13,6 +13,7 @@ from podcaster.utils import (
     find_notebook_dir,
     load_config,
     log_task,
+    resolve_duration,
     task,
 )
 
@@ -543,6 +544,9 @@ async def run(
     if not languages:
         languages = gen_config.languages
 
+    if length != "auto":
+        length = resolve_duration(length)
+
     logger.info(f"=== Starting Deep Dive Article Workflow (Preset: {preset_name}) ===")
 
     # Resolve distribution targets
@@ -626,13 +630,13 @@ async def run(
     )
 
     async def on_enrich_start(
-        task_id: str, topic: str, summary: str, suggested_length: str
+        task_id: str, topic: str, summary: str, suggested_duration: str
     ):
         state.enrichment.status = "in_progress"
         state.enrichment.task_id = task_id
         state.enrichment.topic = topic
         state.enrichment.summary = summary
-        state.enrichment.suggested_length = suggested_length
+        state.enrichment.suggested_length = suggested_duration
         state.save(notebook_dir_path)
 
     research_res = None
@@ -658,20 +662,20 @@ async def run(
                 task_id=state.enrichment.task_id,
                 topic=state.enrichment.topic,
                 summary=state.enrichment.summary,
-                suggested_length=state.enrichment.suggested_length,
+                suggested_duration=state.enrichment.suggested_length,
                 on_start_callback=on_enrich_start,
             )
             state.enrichment.status = "completed"
             state.save(notebook_dir_path)
 
     if length == "auto":
-        # Check if we have suggested length from a completed/in-progress enrichment
+        # Check if we have suggested duration from a completed/in-progress enrichment
         if state.enrichment.suggested_length:
             length = state.enrichment.suggested_length
         elif research_res:
-            length = research_res.get("suggested_length", "long")
+            length = research_res.get("suggested_duration", "20 minutes")
         else:
-            length = "long"  # Fallback
+            length = "20 minutes"  # Fallback
 
         # Save auto-detected length to state configuration so it persists on resume
         state.config.length = length
