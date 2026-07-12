@@ -41,7 +41,7 @@ def duration_to_audio_length(duration_str: str) -> AudioLength:
         return AudioLength.DEFAULT
     if minutes <= 12:
         return AudioLength.SHORT
-    if minutes <= 25:
+    if minutes <= 24:
         return AudioLength.DEFAULT
     return AudioLength.LONG
 
