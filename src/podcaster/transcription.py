@@ -252,6 +252,7 @@ async def create_transcription_jobs(
 
 async def poll_transcription_jobs(
     tasks: AsyncGenerator[dict, None],
+    retry_count: int = 0,
 ) -> AsyncGenerator[dict, None]:
     from google.api_core import operation as api_operation
     from google.longrunning import operations_pb2
@@ -259,18 +260,20 @@ async def poll_transcription_jobs(
     config_data = load_config()
     gcp_config = config_data.gcp
     location = gcp_config.location
+    project_id = gcp_config.project_id
 
     client = SpeechClient(
         client_options={"api_endpoint": f"{location}-speech.googleapis.com"}
     )
 
     async for task in tasks:
-        task_id = task["task_id"]
-        logger.info(f"Polling transcription operation: {task_id}")
+        current_task_id = task["task_id"]
+        logger.info(f"Polling transcription operation: {current_task_id}")
+        attempts = 0
         while True:
             try:
                 gapic_op = client.get_operation(
-                    request=operations_pb2.GetOperationRequest(name=task_id)
+                    request=operations_pb2.GetOperationRequest(name=current_task_id)
                 )
                 op = api_operation.from_gapic(
                     gapic_op,
@@ -281,9 +284,54 @@ async def poll_transcription_jobs(
                     try:
                         # Call result to verify it completed without error
                         op.result()
-                        yield {**task, "status": "completed"}
+                        yield {
+                            **task,
+                            "task_id": current_task_id,
+                            "status": "completed",
+                        }
                     except Exception as e:
-                        yield {**task, "status": "failed", "error": str(e)}
+                        error_msg = str(e)
+                        if attempts < retry_count:
+                            attempts += 1
+                            logger.warning(
+                                f"Transcription operation {current_task_id} failed: {error_msg}. Retrying (attempt {attempts}/{retry_count})..."
+                            )
+                            recognition_config = cloud_speech.RecognitionConfig(
+                                auto_decoding_config=cloud_speech.AutoDetectDecodingConfig(),
+                                language_codes=[task["bcp47_lang"]],
+                                model="chirp_2",
+                                features=cloud_speech.RecognitionFeatures(
+                                    enable_word_time_offsets=True,
+                                    enable_automatic_punctuation=True,
+                                ),
+                            )
+
+                            request = cloud_speech.BatchRecognizeRequest(
+                                recognizer=f"projects/{project_id}/locations/{location}/recognizers/_",
+                                config=recognition_config,
+                                files=[
+                                    cloud_speech.BatchRecognizeFileMetadata(
+                                        uri=task["gcs_uri"]
+                                    )
+                                ],
+                                recognition_output_config=cloud_speech.RecognitionOutputConfig(
+                                    inline_response_config=cloud_speech.InlineOutputConfig(),
+                                ),
+                                processing_strategy=cloud_speech.BatchRecognizeRequest.ProcessingStrategy.DYNAMIC_BATCHING,
+                            )
+                            operation = client.batch_recognize(request=request)
+                            current_task_id = operation.operation.name
+                            logger.info(
+                                f"Started retry transcription job: {current_task_id}"
+                            )
+                            continue
+                        else:
+                            yield {
+                                **task,
+                                "task_id": current_task_id,
+                                "status": "failed",
+                                "error": error_msg,
+                            }
                     break
             except Exception as e:
                 logger.error(f"Error polling transcription: {e}")
@@ -310,6 +358,19 @@ async def download_transcription_jobs(
             logger.warning(
                 f"Skipping download for transcription task {task['task_id']} as status is not completed"
             )
+            # Clean up local and GCS files of the failed job
+            gcs_uri = task.get("gcs_uri")
+            preprocessed_path = task.get("preprocessed_path")
+            if gcs_uri:
+                try:
+                    await delete_from_gcs(gcs_uri)
+                except Exception as e:
+                    logger.warning(f"Failed to delete staging file from GCS: {e}")
+            if preprocessed_path and os.path.exists(preprocessed_path):
+                try:
+                    os.remove(preprocessed_path)
+                except Exception:
+                    pass
             continue
 
         task_id = task["task_id"]
@@ -389,29 +450,118 @@ async def download_transcription_jobs(
 
 
 async def transcribe_artifacts(
-    artifacts: AsyncGenerator[dict, None], verbose: bool = False
+    artifacts: AsyncGenerator[dict, None], verbose: bool = False, retry_count: int = 0
 ) -> AsyncGenerator[dict, None]:
-    # 1. Create jobs
-    tasks = []
-    async for task in create_transcription_jobs(artifacts, verbose):
-        tasks.append(task)
+    # Read all pending input artifacts to a list so we can retry them if needed
+    pending_artifacts = []
+    async for art in artifacts:
+        pending_artifacts.append(art)
 
-    # 2. Poll jobs
-    async def tasks_gen():
-        for t in tasks:
-            yield t
+    attempts = 0
+    while pending_artifacts:
+        # 1. Create jobs
+        tasks = []
 
-    completed = []
-    async for comp in poll_transcription_jobs(tasks_gen()):
-        completed.append(comp)
+        async def art_gen():
+            for art in pending_artifacts:
+                yield art
 
-    # 3. Download results
-    async def completed_gen():
-        for c in completed:
-            yield c
+        async for task in create_transcription_jobs(art_gen(), verbose):
+            tasks.append(task)
 
-    async for result in download_transcription_jobs(completed_gen(), verbose):
-        yield result
+        # 2. Poll jobs
+        async def tasks_gen():
+            for t in tasks:
+                yield t
+
+        completed = []
+        async for comp in poll_transcription_jobs(tasks_gen()):
+            completed.append(comp)
+
+        # 3. Download results
+        success_completed = []
+        failed_artifacts = []
+
+        for comp in completed:
+            if comp.get("status") == "completed":
+                success_completed.append(comp)
+            else:
+                # Clean up local and GCS files of the failed job
+                gcs_uri = comp.get("gcs_uri")
+                if gcs_uri:
+                    try:
+                        await delete_from_gcs(gcs_uri)
+                    except Exception:
+                        pass
+                preprocessed_path = comp.get("preprocessed_path")
+                if preprocessed_path and os.path.exists(preprocessed_path):
+                    try:
+                        os.remove(preprocessed_path)
+                    except Exception:
+                        pass
+
+                # Reconstruct the original artifact structure to retry
+                orig_art = {
+                    k: v
+                    for k, v in comp.items()
+                    if k
+                    not in (
+                        "task_id",
+                        "gcs_uri",
+                        "preprocessed_path",
+                        "bcp47_lang",
+                        "speed_factor",
+                        "status",
+                        "type",
+                        "error",
+                    )
+                }
+                failed_artifacts.append(orig_art)
+
+        async def completed_gen():
+            for c in success_completed:
+                yield c
+
+        downloaded_tasks = []
+        async for result in download_transcription_jobs(completed_gen(), verbose):
+            downloaded_tasks.append(result)
+            yield result
+
+        # Check if any successfully completed job failed during download stage
+        downloaded_task_ids = {d["task_id"] for d in downloaded_tasks}
+        for comp in success_completed:
+            if comp["task_id"] not in downloaded_task_ids:
+                orig_art = {
+                    k: v
+                    for k, v in comp.items()
+                    if k
+                    not in (
+                        "task_id",
+                        "gcs_uri",
+                        "preprocessed_path",
+                        "bcp47_lang",
+                        "speed_factor",
+                        "status",
+                        "type",
+                        "error",
+                    )
+                }
+                failed_artifacts.append(orig_art)
+
+        # If any jobs failed, handle retries
+        if failed_artifacts:
+            if attempts < retry_count:
+                attempts += 1
+                logger.warning(
+                    f"Transcription failed for {len(failed_artifacts)} artifact(s). Retrying (attempt {attempts}/{retry_count})..."
+                )
+                pending_artifacts = failed_artifacts
+            else:
+                raise RuntimeError(
+                    f"Transcription failed for {len(failed_artifacts)} artifact(s) after {attempts} retries."
+                )
+        else:
+            break
 
 
 def generate_lrc(

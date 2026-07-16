@@ -294,6 +294,7 @@ async def generate_download_and_tag_podcast(
     track_offset: int = 0,
     transcribe: bool = False,
     transcription_languages: Optional[list[str]] = None,
+    transcribe_retry_count: int = 0,
     verbose: bool = False,
 ):
     """Polls, downloads, and tags a specific generation task once complete."""
@@ -451,7 +452,9 @@ async def generate_download_and_tag_podcast(
                         yield tagged
 
                     async for transcribed in transcription.transcribe_artifacts(
-                        tagged_gen(), verbose=verbose
+                        tagged_gen(),
+                        verbose=verbose,
+                        retry_count=transcribe_retry_count,
                     ):
                         tagged = transcribed
                         break
@@ -627,6 +630,7 @@ async def run(
                     task_id=state.cover.task_id,
                     image_gen_prompt=state.cover.image_gen_prompt,
                     on_start_callback=on_cover_start,
+                    retry_count=wf_config.generate_cover.retry_count,
                 )
                 state.cover_image_path = cover_path
                 state.cover.status = "completed"
@@ -659,6 +663,12 @@ async def run(
         if max_imports == -1:
             max_imports = None
         mode = enrich_config.mode
+
+        # Resolve ignore_errors configuration
+        ignore_errors = enrich_config.ignore_errors
+        if ignore_errors is None:
+            ignore_errors = config.research.ignore_errors
+
         async with log_task(
             "enrich_source_task",
             logger,
@@ -678,6 +688,7 @@ async def run(
                 summary=state.enrichment.summary,
                 suggested_duration=state.enrichment.suggested_length,
                 on_start_callback=on_enrich_start,
+                ignore_errors=ignore_errors,
             )
             state.enrichment.status = "completed"
             state.save(notebook_dir_path)
@@ -748,6 +759,11 @@ async def run(
     # 4. Poll, download and tag
     processed_files = []
     if tasks:
+        # Resolve transcribe_retry_count
+        transcribe_retry_count = wf_config.transcribe.retry_count
+        if transcribe_retry_count is None:
+            transcribe_retry_count = config.podcast_transcription.retry_count
+
         processing_coros = [
             generate_download_and_tag_podcast(
                 notebook_id,
@@ -758,6 +774,7 @@ async def run(
                 podcast_dir=podcast_dir,
                 transcribe=transcribe,
                 transcription_languages=transcription_langs,
+                transcribe_retry_count=transcribe_retry_count,
                 verbose=verbose,
             )
             for task in tasks

@@ -349,6 +349,7 @@ async def create_research_job(
 async def poll_research_jobs(
     tasks: AsyncGenerator[dict, None],
     max_imports: Optional[int] = None,
+    ignore_errors: bool = False,
 ) -> AsyncGenerator[dict, None]:
     storage_path = get_storage_path()
     async with await RetryingNotebookLMClient.from_storage(
@@ -394,9 +395,30 @@ async def poll_research_jobs(
             imported = []
             if sources_to_import:
                 logger.debug(f"Importing {len(sources_to_import)} sources...")
-                imported = await client.research.import_sources(
-                    notebook_id, task_id, sources_to_import
-                )
+                if ignore_errors:
+                    try:
+                        imported = await client.research.import_sources(
+                            notebook_id, task_id, sources_to_import
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            f"Batch import failed: {e}. Retrying sources one-by-one..."
+                        )
+                        imported = []
+                        for src in sources_to_import:
+                            try:
+                                single_imported = await client.research.import_sources(
+                                    notebook_id, task_id, [src]
+                                )
+                                imported.extend(single_imported)
+                            except Exception as se:
+                                logger.warning(
+                                    f"Failed to import source {src.get('url')}: {se}. Skipping."
+                                )
+                else:
+                    imported = await client.research.import_sources(
+                        notebook_id, task_id, sources_to_import
+                    )
 
             yield {
                 **task,
@@ -418,6 +440,7 @@ async def research_from_source(
     summary: Optional[str] = None,
     suggested_duration: Optional[str] = None,
     on_start_callback: Optional[Callable[[str, str, str, str], Any]] = None,
+    ignore_errors: bool = False,
 ) -> dict:
     if verbose:
         setup_logging(verbose)
@@ -442,7 +465,9 @@ async def research_from_source(
         }
 
     res = None
-    async for r in poll_research_jobs(task_gen(), max_imports):
+    async for r in poll_research_jobs(
+        task_gen(), max_imports, ignore_errors=ignore_errors
+    ):
         res = r
     if res is None:
         raise RuntimeError("Research polling failed to return a result.")

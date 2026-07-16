@@ -20,17 +20,20 @@ class EnrichWebConfig(BaseModel):
     enable: bool = True
     max_imports: int = 5
     mode: Literal["fast", "deep"] = "fast"
+    ignore_errors: Optional[bool] = None
 
 
 class GenerateCoverConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     enable: bool = True
+    retry_count: int = 0
 
 
 class TranscribeConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     enable: bool = False
     languages: List[str] = Field(default_factory=lambda: [])
+    retry_count: Optional[int] = None
 
 
 class RsyncTargetConfig(BaseModel):
@@ -95,6 +98,7 @@ class ResearchConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     unimportables: List[str] = Field(default_factory=list)
     import_fallback: Literal["ignore", "force", "scrape"] = "scrape"
+    ignore_errors: bool = False
 
 
 class ScraperAgentConfig(BaseModel):
@@ -119,6 +123,7 @@ class AgentConfig(BaseModel):
 class PodcastTranscriptionConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     speed_factor: float = 1.5
+    retry_count: int = 0
 
 
 class AppConfig(BaseModel):

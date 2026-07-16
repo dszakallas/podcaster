@@ -156,9 +156,15 @@ def cover_create(notebook_id, verbose):
 
 
 @cover_group.command(name="poll")
+@click.option(
+    "--retry-count",
+    type=int,
+    default=0,
+    help="Number of times to retry the job on failure (default: 0)",
+)
 @click.option("--arg-json", multiple=True, help="JSON task object(s) to poll.")
 @click.option("--verbose", "-v", is_flag=True, help="Enable verbose logging")
-def cover_poll(arg_json, verbose):
+def cover_poll(retry_count, arg_json, verbose):
     """Poll cover generation tasks. Accepts input from --arg-json or stdin."""
     setup_logging(verbose)
 
@@ -174,7 +180,9 @@ def cover_poll(arg_json, verbose):
                 async for item in stream_stdin():
                     yield item
 
-        async for completed in cover.poll_cover_jobs(input_gen()):
+        async for completed in cover.poll_cover_jobs(
+            input_gen(), retry_count=retry_count
+        ):
             click.echo(json.dumps(completed))
             sys.stdout.flush()
 
@@ -245,9 +253,14 @@ def transcription_create(arg_json, verbose):
 
 
 @transcription_group.command(name="poll")
+@click.option(
+    "--retry-count",
+    type=int,
+    help="Number of times to retry the job on failure (default: 0 or config default)",
+)
 @click.option("--arg-json", multiple=True, help="JSON task object(s) to poll.")
 @click.option("--verbose", "-v", is_flag=True, help="Enable verbose logging")
-def transcription_poll(arg_json, verbose):
+def transcription_poll(retry_count, arg_json, verbose):
     """Poll speech recognition batch jobs. Accepts input from --arg-json or stdin."""
     setup_logging(verbose)
 
@@ -263,7 +276,18 @@ def transcription_poll(arg_json, verbose):
                 async for item in stream_stdin():
                     yield item
 
-        async for completed in transcription.poll_transcription_jobs(input_gen()):
+        from .utils import load_config
+
+        config = load_config()
+        final_retry_count = (
+            retry_count
+            if retry_count is not None
+            else config.podcast_transcription.retry_count
+        )
+
+        async for completed in transcription.poll_transcription_jobs(
+            input_gen(), retry_count=final_retry_count
+        ):
             click.echo(json.dumps(completed))
             sys.stdout.flush()
 
@@ -549,8 +573,13 @@ def research_create(notebook_id, source_id, mode, verbose):
 @research_group.command(name="poll")
 @click.option("--max-imports", type=int, help="Maximum number of sources to import")
 @click.option("--arg-json", multiple=True, help="JSON task object(s) to poll.")
+@click.option(
+    "--ignore-errors",
+    is_flag=True,
+    help="Ignore errors when importing enrichment sources",
+)
 @click.option("--verbose", "-v", is_flag=True, help="Enable verbose logging")
-def research_poll(max_imports, arg_json, verbose):
+def research_poll(max_imports, arg_json, ignore_errors, verbose):
     """Poll research tasks and import sources. Accepts input from --arg-json or stdin."""
     setup_logging(verbose)
 
@@ -566,7 +595,14 @@ def research_poll(max_imports, arg_json, verbose):
                 async for item in stream_stdin():
                     yield item
 
-        async for completed in research.poll_research_jobs(input_gen(), max_imports):
+        from .utils import load_config
+
+        config = load_config()
+        final_ignore_errors = ignore_errors or config.research.ignore_errors
+
+        async for completed in research.poll_research_jobs(
+            input_gen(), max_imports, ignore_errors=final_ignore_errors
+        ):
             click.echo(json.dumps(completed))
             sys.stdout.flush()
 
