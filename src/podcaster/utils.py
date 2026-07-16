@@ -255,13 +255,16 @@ def rsync_dir(src: str, dst: str):
     subprocess.run(cmd, check=True)
 
 
-def rclone_copy_dir(src: str, dst: str):
+def rclone_copy_dir(src: str, dst: str, rclone_flags: Optional[list[str]] = None):
     """Copies a directory using rclone, creating parent if needed."""
     import subprocess
 
     # rclone handles creating parents usually, but let's be consistent
     # Note: dst might be a remote like 'remote:path/to/dir'
-    cmd = ["rclone", "copy", "--include", "*.m4a", "--include", "*.lrc", src, dst]
+    cmd = ["rclone", "copy"]
+    if rclone_flags:
+        cmd.extend(rclone_flags)
+    cmd.extend(["--include", "*.m4a", "--include", "*.lrc", src, dst])
     subprocess.run(cmd, check=True)
 
 

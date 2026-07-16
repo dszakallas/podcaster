@@ -37,6 +37,7 @@ class RsyncTargetConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     method: Literal["rsync", "rclone"] = "rsync"
     destination: str
+    rclone_flags: List[str] = Field(default_factory=list)
 
 
 class PlexRsyncConfig(BaseModel):
@@ -46,6 +47,7 @@ class PlexRsyncConfig(BaseModel):
     # Optional inline config if ref is not used
     method: Optional[Literal["rsync", "rclone"]] = None
     destination: Optional[str] = None
+    rclone_flags: Optional[List[str]] = None
 
 
 class PlexTargetConfig(BaseModel):
@@ -66,6 +68,7 @@ class DistributionTarget(BaseModel):
     destination: Optional[str] = None
     section_id: Optional[int] = None
     server_library_path: Optional[str] = None
+    rclone_flags: Optional[List[str]] = None
 
 
 class DeepDiveArticleConfig(BaseModel):

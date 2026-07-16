@@ -164,9 +164,12 @@ def _distribution_target_params(target) -> dict:
     }
 
 
-def _resolve_rsync_distribution_target(target, config) -> tuple[str, Optional[str]]:
+def _resolve_rsync_distribution_target(
+    target, config
+) -> tuple[str, Optional[str], Optional[list[str]]]:
     dest = target.destination
     method = target.method
+    rclone_flags = target.rclone_flags
     if target.ref:
         ref_config = config.rsync.get(target.ref)
         if not ref_config:
@@ -175,20 +178,22 @@ def _resolve_rsync_distribution_target(target, config) -> tuple[str, Optional[st
             )
         dest = ref_config.destination
         method = ref_config.method
+        rclone_flags = ref_config.rclone_flags
 
     if not dest:
         raise ValueError("Rsync distribution target missing destination.")
 
-    return dest, method
+    return dest, method, rclone_flags
 
 
 def _resolve_plex_distribution_target(
     target, config
-) -> tuple[str, Optional[str], Optional[str], str]:
+) -> tuple[str, Optional[str], Optional[str], str, Optional[list[str]]]:
     section_id = target.section_id
     server_library_path = target.server_library_path
     rsync_dest = target.destination
     rsync_method = target.method or "rsync"
+    rclone_flags = target.rclone_flags
 
     if target.ref:
         ref_config = config.plex.get(target.ref)
@@ -207,14 +212,18 @@ def _resolve_plex_distribution_target(
                     )
                 rsync_dest = rsync_ref.destination
                 rsync_method = rsync_ref.method
+                if not rclone_flags:
+                    rclone_flags = rsync_ref.rclone_flags
             else:
                 rsync_dest = ref_config.rsync.destination
                 rsync_method = ref_config.rsync.method or "rsync"
+                if not rclone_flags:
+                    rclone_flags = ref_config.rsync.rclone_flags
 
     if section_id is None:
         raise ValueError("Plex distribution target missing section_id.")
 
-    return section_id, server_library_path, rsync_dest, rsync_method
+    return section_id, server_library_path, rsync_dest, rsync_method, rclone_flags
 
 
 async def _run_distribution_target(
@@ -233,13 +242,16 @@ async def _run_distribution_target(
             target=target_params,
         ):
             if target.type == "rsync":
-                dest, method = _resolve_rsync_distribution_target(target, config)
+                dest, method, rclone_flags = _resolve_rsync_distribution_target(
+                    target, config
+                )
                 await plex.sync_podcast(
                     notebook_id=notebook_id,
                     destination=dest,
                     method=method,
                     podcast_dir=podcast_dir,
                     verbose=verbose,
+                    rclone_flags=rclone_flags,
                 )
             elif target.type == "plex":
                 (
@@ -247,6 +259,7 @@ async def _run_distribution_target(
                     server_library_path,
                     rsync_dest,
                     rsync_method,
+                    rclone_flags,
                 ) = _resolve_plex_distribution_target(target, config)
                 await plex.sync_to_plex(
                     notebook_id=notebook_id,
@@ -256,6 +269,7 @@ async def _run_distribution_target(
                     rsync_destination=rsync_dest,
                     sync_method=rsync_method,
                     verbose=verbose,
+                    rclone_flags=rclone_flags,
                 )
     except Exception:
         pass

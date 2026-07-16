@@ -21,6 +21,7 @@ async def sync_podcast(
     method: str = "rsync",
     podcast_dir: Optional[str] = None,
     verbose: bool = False,
+    rclone_flags: Optional[list[str]] = None,
 ) -> dict:
     if verbose:
         setup_logging(verbose)
@@ -47,7 +48,7 @@ async def sync_podcast(
         rsync_dir(source_dir, dst_path)
     elif method == "rclone":
         logger.info(f"Rclone copying {source_dir} to {dst_path}...")
-        rclone_copy_dir(source_dir, dst_path)
+        rclone_copy_dir(source_dir, dst_path, rclone_flags=rclone_flags)
     else:
         raise ValueError(f"Unknown sync method: {method}")
 
@@ -70,6 +71,7 @@ async def sync_to_plex(
     rsync_destination: Optional[str] = None,
     sync_method: str = "rsync",
     verbose: bool = False,
+    rclone_flags: Optional[list[str]] = None,
 ):
     if verbose:
         setup_logging(verbose)
@@ -99,6 +101,7 @@ async def sync_to_plex(
             method=sync_method,
             podcast_dir=podcast_dir,
             verbose=verbose,
+            rclone_flags=rclone_flags,
         )
 
     # 1. Construct directory name using find_notebook_dir

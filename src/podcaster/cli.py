@@ -587,8 +587,15 @@ def research_poll(max_imports, arg_json, verbose):
     "-p",
     help="Base directory where podcasts are stored (default from config or out)",
 )
+@click.option(
+    "--rclone-flag",
+    multiple=True,
+    help="Additional flags to pass to rclone (can be specified multiple times)",
+)
 @click.option("--verbose", "-v", is_flag=True, help="Enable verbose logging")
-def dist_rsync(notebook_id, destination, method, preset, podcast_dir, verbose):
+def dist_rsync(
+    notebook_id, destination, method, preset, podcast_dir, rclone_flag, verbose
+):
     """Distribute a notebook's podcasts to a remote directory (rsync/rclone)."""
     setup_logging(verbose)
 
@@ -600,6 +607,7 @@ def dist_rsync(notebook_id, destination, method, preset, podcast_dir, verbose):
 
             final_dest = destination
             final_method = method or "rsync"
+            final_rclone_flags = list(rclone_flag) if rclone_flag else None
 
             if preset:
                 ref_config = config.rsync.get(preset)
@@ -613,6 +621,8 @@ def dist_rsync(notebook_id, destination, method, preset, podcast_dir, verbose):
                     sys.exit(1)
                 final_dest = ref_config.destination
                 final_method = method or ref_config.method
+                if not final_rclone_flags:
+                    final_rclone_flags = ref_config.rclone_flags
 
             if not final_dest:
                 click.echo(
@@ -626,7 +636,12 @@ def dist_rsync(notebook_id, destination, method, preset, podcast_dir, verbose):
                 sys.exit(1)
 
             res = await plex.sync_podcast(
-                notebook_id, final_dest, final_method, podcast_dir, verbose
+                notebook_id,
+                final_dest,
+                final_method,
+                podcast_dir,
+                verbose,
+                rclone_flags=final_rclone_flags,
             )
             click.echo(json.dumps(res))
         except Exception as e:
@@ -668,6 +683,11 @@ def dist_rsync(notebook_id, destination, method, preset, podcast_dir, verbose):
     type=click.Choice(["rsync", "rclone"]),
     help="Sync method (default: rsync)",
 )
+@click.option(
+    "--rclone-flag",
+    multiple=True,
+    help="Additional flags to pass to rclone (can be specified multiple times)",
+)
 @click.option("--verbose", "-v", is_flag=True, help="Enable verbose logging")
 def dist_plex(
     notebook_id,
@@ -679,6 +699,7 @@ def dist_plex(
     server_library_path,
     rsync_destination,
     method,
+    rclone_flag,
     verbose,
 ):
     """Distribute a notebook's podcasts to a Plex library."""
@@ -694,6 +715,7 @@ def dist_plex(
             final_server_path = server_library_path
             final_rsync_dest = rsync_destination
             final_method = method or "rsync"
+            final_rclone_flags = list(rclone_flag) if rclone_flag else None
 
             if preset:
                 ref_config = config.plex.get(preset)
@@ -717,11 +739,15 @@ def dist_plex(
                                 rsync_destination or rsync_ref.destination
                             )
                             final_method = method or rsync_ref.method
+                            if not final_rclone_flags:
+                                final_rclone_flags = rsync_ref.rclone_flags
                     else:
                         final_rsync_dest = (
                             rsync_destination or ref_config.rsync.destination
                         )
                         final_method = method or ref_config.rsync.method or "rsync"
+                        if not final_rclone_flags:
+                            final_rclone_flags = ref_config.rsync.rclone_flags
 
             if final_section_id is None:
                 click.echo(
@@ -744,6 +770,7 @@ def dist_plex(
                 final_rsync_dest,
                 final_method,
                 verbose,
+                rclone_flags=final_rclone_flags,
             )
             click.echo(json.dumps(res))
         except Exception as e:
