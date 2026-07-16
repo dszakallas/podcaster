@@ -39,13 +39,20 @@ workflow:
     type: "deep_dive_article"
     enrich_web:
       enable: true
-      max_imports: 5
-      mode: "fast"
+      retry_count: 0
+      spec:
+        max_imports: 5
+        mode: "fast"
+        ignore_errors: false
     generate_cover:
       enable: true
+      retry_count: 0
+      spec: {}
     transcribe:
       enable: true
-      languages: ["cs", "en"]
+      retry_count: 0
+      spec:
+        languages: ["cs", "en"]
     distribute:
       - type: plex
         ref: my-media-server  # reference to a plex configuration

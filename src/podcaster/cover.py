@@ -75,84 +75,21 @@ async def create_cover_job(
 
 async def poll_cover_jobs(
     tasks: AsyncGenerator[dict, None],
-    retry_count: int = 0,
 ) -> AsyncGenerator[dict, None]:
     genai_client = genai.Client()
     async for task in tasks:
-        current_task_id = task["task_id"]
-        logger.debug(f"Polling batch job: {current_task_id}")
-        attempts = 0
+        task_id = task["task_id"]
+        logger.debug(f"Polling batch job: {task_id}")
         while True:
-            job = await retry_rpc(
-                genai_client.batches.get, name=current_task_id, logger=logger
-            )
+            job = await retry_rpc(genai_client.batches.get, name=task_id, logger=logger)
             state_str = str(job.state)
             if "SUCCEEDED" in state_str:
-                yield {**task, "task_id": current_task_id, "status": "completed"}
+                yield {**task, "status": "completed"}
                 break
             elif "FAILED" in state_str or "CANCELLED" in state_str:
                 error_msg = str(job.error) if job.error else "Job failed/cancelled"
-                if attempts < retry_count:
-                    attempts += 1
-                    logger.warning(
-                        f"Cover generation job {current_task_id} failed: {error_msg}. Retrying (attempt {attempts}/{retry_count})...."
-                    )
-                    image_gen_prompt = task.get("image_gen_prompt")
-                    if not image_gen_prompt:
-                        logger.error(
-                            "No image_gen_prompt found in task to retry. Failing."
-                        )
-                        yield {
-                            **task,
-                            "task_id": current_task_id,
-                            "status": "failed",
-                            "error": error_msg,
-                        }
-                        break
-
-                    try:
-                        new_batch_job = await retry_rpc(
-                            genai_client.batches.create,
-                            model="gemini-3.1-flash-image",
-                            src=[
-                                types.InlinedRequest(
-                                    model="gemini-3.1-flash-image",
-                                    contents=[
-                                        types.Content(
-                                            parts=[types.Part(text=image_gen_prompt)],
-                                            role="user",
-                                        )
-                                    ],
-                                    config=types.GenerateContentConfig(
-                                        response_modalities=["IMAGE"],
-                                        image_config=types.ImageConfig(
-                                            aspect_ratio="1:1"
-                                        ),
-                                    ),
-                                )
-                            ],
-                            logger=logger,
-                        )
-                        current_task_id = new_batch_job.name
-                        logger.info(f"Started retry cover job: {current_task_id}")
-                        continue
-                    except Exception as re:
-                        logger.error(f"Failed to submit retry job: {re}")
-                        yield {
-                            **task,
-                            "task_id": current_task_id,
-                            "status": "failed",
-                            "error": f"{error_msg} (Retry submit failed: {re})",
-                        }
-                        break
-                else:
-                    yield {
-                        **task,
-                        "task_id": current_task_id,
-                        "status": "failed",
-                        "error": error_msg,
-                    }
-                    break
+                yield {**task, "status": "failed", "error": error_msg}
+                break
             await asyncio.sleep(15)
 
 
@@ -236,7 +173,6 @@ async def generate_cover(
     task_id: Optional[str] = None,
     image_gen_prompt: Optional[str] = None,
     on_start_callback: Optional[Callable[[str, str], Any]] = None,
-    retry_count: int = 0,
 ) -> str:
     # 1. Start cover job if not provided
     if not task_id:
@@ -255,7 +191,7 @@ async def generate_cover(
         }
 
     completed_task = None
-    async for t in poll_cover_jobs(task_gen(), retry_count=retry_count):
+    async for t in poll_cover_jobs(task_gen()):
         completed_task = t
 
     if not completed_task or completed_task.get("status") != "completed":

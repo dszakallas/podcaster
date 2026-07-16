@@ -441,24 +441,51 @@ async def generate_download_and_tag_podcast(
                     "transcript_path": transcript_path,
                 }
             else:
-                async with log_task(
-                    "transcribe_task",
-                    logger,
-                    artifact_id=completed_task["artifact_id"],
-                    language=lang,
-                ):
+                attempts = 0
+                while True:
+                    success = False
+                    try:
+                        async with log_task(
+                            "transcribe_task",
+                            logger,
+                            artifact_id=completed_task["artifact_id"],
+                            language=lang,
+                        ):
 
-                    async def tagged_gen():
-                        yield tagged
+                            async def tagged_gen():
+                                yield tagged
 
-                    async for transcribed in transcription.transcribe_artifacts(
-                        tagged_gen(),
-                        verbose=verbose,
-                        retry_count=transcribe_retry_count,
+                            async for transcribed in transcription.transcribe_artifacts(
+                                tagged_gen(),
+                                verbose=verbose,
+                            ):
+                                tagged = transcribed
+                                success = True
+                                break
+                    except Exception as e:
+                        logger.error(f"Error during transcription attempt: {e}")
+
+                    if (
+                        success
+                        and tagged.get("lrc_path")
+                        and os.path.exists(tagged["lrc_path"])
                     ):
-                        tagged = transcribed
+                        update_task_state(
+                            "transcribed", lrc_path=tagged.get("lrc_path")
+                        )
                         break
-                    update_task_state("transcribed", lrc_path=tagged.get("lrc_path"))
+                    else:
+                        error_msg = f"Transcription attempt {attempts + 1} failed or produced no LRC file."
+                        if attempts < transcribe_retry_count:
+                            attempts += 1
+                            logger.warning(
+                                f"{error_msg} Retrying transcription task (attempt {attempts}/{transcribe_retry_count})..."
+                            )
+                            continue
+                        else:
+                            raise RuntimeError(
+                                f"Transcription failed after {attempts} retries."
+                            )
         else:
             logger.debug(
                 f"Skipping transcription for {completed_task['artifact_id']} (lang: {lang} not in {transcription_languages})"
@@ -553,7 +580,7 @@ async def run(
     if transcribe is None:
         transcribe = wf_config.transcribe.enable
 
-    transcription_langs = wf_config.transcribe.languages
+    transcription_langs = wf_config.transcribe.spec.languages
 
     gen_config = config.podcast_generation
     if not length:
@@ -618,24 +645,45 @@ async def run(
             state.save(notebook_dir_path)
 
         async def make_cover():
-            async with log_task(
-                "generate_cover_task",
-                logger,
-                notebook_id=notebook_id,
-                podcast_dir=podcast_dir,
-            ):
-                cover_path = await cover.generate_cover(
-                    notebook_id,
-                    podcast_dir=podcast_dir,
-                    task_id=state.cover.task_id,
-                    image_gen_prompt=state.cover.image_gen_prompt,
-                    on_start_callback=on_cover_start,
-                    retry_count=wf_config.generate_cover.retry_count,
-                )
-                state.cover_image_path = cover_path
-                state.cover.status = "completed"
-                state.save(notebook_dir_path)
-                return cover_path
+            retry_count = wf_config.generate_cover.retry_count
+            attempts = 0
+            while True:
+                try:
+                    async with log_task(
+                        "generate_cover_task",
+                        logger,
+                        notebook_id=notebook_id,
+                        podcast_dir=podcast_dir,
+                    ):
+                        task_id_to_use = state.cover.task_id if attempts == 0 else None
+                        prompt_to_use = (
+                            state.cover.image_gen_prompt if attempts == 0 else None
+                        )
+
+                        cover_path = await cover.generate_cover(
+                            notebook_id,
+                            podcast_dir=podcast_dir,
+                            task_id=task_id_to_use,
+                            image_gen_prompt=prompt_to_use,
+                            on_start_callback=on_cover_start,
+                        )
+                        state.cover_image_path = cover_path
+                        state.cover.status = "completed"
+                        state.save(notebook_dir_path)
+                        return cover_path
+                except Exception as e:
+                    if attempts < retry_count:
+                        attempts += 1
+                        logger.warning(
+                            f"Cover generation failed: {e}. Retrying cover generation task (attempt {attempts}/{retry_count})..."
+                        )
+                        state.cover.task_id = None
+                        state.cover.image_gen_prompt = None
+                        state.cover.status = "failed"
+                        state.save(notebook_dir_path)
+                        continue
+                    else:
+                        raise
 
         cover_task = asyncio.create_task(make_cover())
 
@@ -659,15 +707,11 @@ async def run(
 
     research_res = None
     if enrichment_needed:
-        max_imports = enrich_config.max_imports if enrich_web else 0
+        max_imports = enrich_config.spec.max_imports if enrich_web else 0
         if max_imports == -1:
             max_imports = None
-        mode = enrich_config.mode
-
-        # Resolve ignore_errors configuration
-        ignore_errors = enrich_config.ignore_errors
-        if ignore_errors is None:
-            ignore_errors = config.research.ignore_errors
+        mode = enrich_config.spec.mode
+        ignore_errors = enrich_config.spec.ignore_errors
 
         async with log_task(
             "enrich_source_task",
@@ -761,8 +805,6 @@ async def run(
     if tasks:
         # Resolve transcribe_retry_count
         transcribe_retry_count = wf_config.transcribe.retry_count
-        if transcribe_retry_count is None:
-            transcribe_retry_count = config.podcast_transcription.retry_count
 
         processing_coros = [
             generate_download_and_tag_podcast(
