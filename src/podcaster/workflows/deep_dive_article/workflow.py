@@ -17,7 +17,14 @@ from podcaster.utils import (
     task,
 )
 
-from .state import TaskState, WorkflowConfig, WorkflowState
+from .state import (
+    CoverState,
+    EnrichmentState,
+    TaskState,
+    TranscriptionState,
+    WorkflowConfig,
+    WorkflowState,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -444,6 +451,13 @@ async def generate_download_and_tag_podcast(
                 attempts = 0
                 while True:
                     success = False
+                    t_state = _task_state_for(task_id, lang, state)
+                    if t_state:
+                        t_state.transcription.append(
+                            TranscriptionState(status="in_progress")
+                        )
+                        state.save(notebook_dir)
+
                     try:
                         async with log_task(
                             "transcribe_task",
@@ -465,6 +479,7 @@ async def generate_download_and_tag_podcast(
                     except Exception as e:
                         logger.error(f"Error during transcription attempt: {e}")
 
+                    t_state = _task_state_for(task_id, lang, state)
                     if (
                         success
                         and tagged.get("lrc_path")
@@ -473,9 +488,17 @@ async def generate_download_and_tag_podcast(
                         update_task_state(
                             "transcribed", lrc_path=tagged.get("lrc_path")
                         )
+                        if t_state and t_state.transcription:
+                            t_state.transcription[-1].status = "completed"
+                            t_state.transcription[-1].lrc_path = tagged.get("lrc_path")
+                            state.save(notebook_dir)
                         break
                     else:
                         error_msg = f"Transcription attempt {attempts + 1} failed or produced no LRC file."
+                        if t_state and t_state.transcription:
+                            t_state.transcription[-1].status = "failed"
+                            t_state.transcription[-1].error = error_msg
+                            state.save(notebook_dir)
                         if attempts < transcribe_retry_count:
                             attempts += 1
                             logger.warning(
@@ -632,16 +655,26 @@ async def run(
     # Start cover task in the background if needed
     cover_task = None
     cover_needed = generate_cover and (
-        state.cover.status != "completed"
+        not state.cover
+        or state.cover[-1].status != "completed"
         or not state.cover_image_path
         or not os.path.exists(state.cover_image_path)
     )
     if cover_needed:
 
         async def on_cover_start(task_id: str, image_gen_prompt: str):
-            state.cover.status = "in_progress"
-            state.cover.task_id = task_id
-            state.cover.image_gen_prompt = image_gen_prompt
+            if not state.cover or state.cover[-1].status in ("completed", "failed"):
+                state.cover.append(
+                    CoverState(
+                        status="in_progress",
+                        task_id=task_id,
+                        image_gen_prompt=image_gen_prompt,
+                    )
+                )
+            else:
+                state.cover[-1].status = "in_progress"
+                state.cover[-1].task_id = task_id
+                state.cover[-1].image_gen_prompt = image_gen_prompt
             state.save(notebook_dir_path)
 
         async def make_cover():
@@ -655,9 +688,15 @@ async def run(
                         notebook_id=notebook_id,
                         podcast_dir=podcast_dir,
                     ):
-                        task_id_to_use = state.cover.task_id if attempts == 0 else None
+                        task_id_to_use = (
+                            state.cover[-1].task_id
+                            if state.cover and attempts == 0
+                            else None
+                        )
                         prompt_to_use = (
-                            state.cover.image_gen_prompt if attempts == 0 else None
+                            state.cover[-1].image_gen_prompt
+                            if state.cover and attempts == 0
+                            else None
                         )
 
                         cover_path = await cover.generate_cover(
@@ -668,21 +707,26 @@ async def run(
                             on_start_callback=on_cover_start,
                         )
                         state.cover_image_path = cover_path
-                        state.cover.status = "completed"
+                        if state.cover:
+                            state.cover[-1].status = "completed"
                         state.save(notebook_dir_path)
                         return cover_path
                 except Exception as e:
                     if attempts < retry_count:
                         attempts += 1
                         logger.warning(
-                            f"Cover generation failed: {e}. Retrying cover generation task (attempt {attempts}/{retry_count})..."
+                            f"Cover generation failed: {e}. Retrying cover generation task (attempt {attempts}/{retry_count})...."
                         )
-                        state.cover.task_id = None
-                        state.cover.image_gen_prompt = None
-                        state.cover.status = "failed"
+                        if state.cover:
+                            state.cover[-1].status = "failed"
+                            state.cover[-1].error = str(e)
                         state.save(notebook_dir_path)
                         continue
                     else:
+                        if state.cover:
+                            state.cover[-1].status = "failed"
+                            state.cover[-1].error = str(e)
+                        state.save(notebook_dir_path)
                         raise
 
         cover_task = asyncio.create_task(make_cover())
@@ -692,17 +736,31 @@ async def run(
     # We need enrichment if explicitly requested OR if auto-length is needed
     # AND we have not already marked enrichment as completed
     enrichment_needed = (enrich_web or length == "auto") and (
-        state.enrichment.status != "completed"
+        not state.enrichment or state.enrichment[-1].status != "completed"
     )
 
     async def on_enrich_start(
         task_id: str, topic: str, summary: str, suggested_duration: str
     ):
-        state.enrichment.status = "in_progress"
-        state.enrichment.task_id = task_id
-        state.enrichment.topic = topic
-        state.enrichment.summary = summary
-        state.enrichment.suggested_length = suggested_duration
+        if not state.enrichment or state.enrichment[-1].status in (
+            "completed",
+            "failed",
+        ):
+            state.enrichment.append(
+                EnrichmentState(
+                    status="in_progress",
+                    task_id=task_id,
+                    topic=topic,
+                    summary=summary,
+                    suggested_length=suggested_duration,
+                )
+            )
+        else:
+            state.enrichment[-1].status = "in_progress"
+            state.enrichment[-1].task_id = task_id
+            state.enrichment[-1].topic = topic
+            state.enrichment[-1].summary = summary
+            state.enrichment[-1].suggested_length = suggested_duration
         state.save(notebook_dir_path)
 
     research_res = None
@@ -712,6 +770,13 @@ async def run(
             max_imports = None
         mode = enrich_config.spec.mode
         ignore_errors = enrich_config.spec.ignore_errors
+
+        task_id_val = state.enrichment[-1].task_id if state.enrichment else None
+        topic_val = state.enrichment[-1].topic if state.enrichment else None
+        summary_val = state.enrichment[-1].summary if state.enrichment else None
+        suggested_len_val = (
+            state.enrichment[-1].suggested_length if state.enrichment else None
+        )
 
         async with log_task(
             "enrich_source_task",
@@ -727,20 +792,21 @@ async def run(
                 mode=mode,
                 max_imports=max_imports,
                 verbose=verbose,
-                task_id=state.enrichment.task_id,
-                topic=state.enrichment.topic,
-                summary=state.enrichment.summary,
-                suggested_duration=state.enrichment.suggested_length,
+                task_id=task_id_val,
+                topic=topic_val,
+                summary=summary_val,
+                suggested_duration=suggested_len_val,
                 on_start_callback=on_enrich_start,
                 ignore_errors=ignore_errors,
             )
-            state.enrichment.status = "completed"
+            if state.enrichment:
+                state.enrichment[-1].status = "completed"
             state.save(notebook_dir_path)
 
     if length == "auto":
         # Check if we have suggested duration from a completed/in-progress enrichment
-        if state.enrichment.suggested_length:
-            length = state.enrichment.suggested_length
+        if state.enrichment and state.enrichment[-1].suggested_length:
+            length = state.enrichment[-1].suggested_length
         elif research_res:
             length = research_res.get("suggested_duration", "20 minutes")
         else:

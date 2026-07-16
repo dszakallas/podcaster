@@ -4,6 +4,12 @@ from typing import List, Optional
 from pydantic import BaseModel, Field
 
 
+class TranscriptionState(BaseModel):
+    status: str = "pending"  # "pending", "in_progress", "completed", "failed"
+    lrc_path: Optional[str] = None
+    error: Optional[str] = None
+
+
 class TaskState(BaseModel):
     task_id: str
     language: str
@@ -12,6 +18,7 @@ class TaskState(BaseModel):
     audio_path: Optional[str] = None
     lrc_path: Optional[str] = None
     error: Optional[str] = None
+    transcription: List[TranscriptionState] = Field(default_factory=list)
 
 
 class WorkflowConfig(BaseModel):
@@ -47,8 +54,8 @@ class WorkflowState(BaseModel):
     config: WorkflowConfig
     source_id: Optional[str] = None
     cover_image_path: Optional[str] = None
-    enrichment: EnrichmentState = Field(default_factory=EnrichmentState)
-    cover: CoverState = Field(default_factory=CoverState)
+    enrichment: List[EnrichmentState] = Field(default_factory=list)
+    cover: List[CoverState] = Field(default_factory=list)
     tasks: List[TaskState] = Field(default_factory=list)
 
     def save(self, directory: Path) -> None:
