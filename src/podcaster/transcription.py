@@ -138,14 +138,27 @@ async def delete_from_gcs(gcs_uri: str):
 
 
 async def create_transcription_jobs(
-    artifacts: AsyncGenerator[dict, None], verbose: bool = False
+    artifacts: AsyncGenerator[dict, None],
+    verbose: bool = False,
+    transcriber_key: str = "default",
 ) -> AsyncGenerator[dict, None]:
     if verbose:
         setup_logging(verbose)
 
     config_data = load_config()
     gcp_config = config_data.gcp
-    transcription_config = config_data.podcast_transcription
+    from .config import PodcastTranscriptionConfig
+
+    if transcriber_key not in config_data.podcast_transcribers:
+        logger.warning(
+            f"Podcast transcriber '{transcriber_key}' not found in configuration. Using default."
+        )
+        transcription_config = config_data.podcast_transcribers.get(
+            "default", PodcastTranscriptionConfig()
+        )
+    else:
+        transcription_config = config_data.podcast_transcribers[transcriber_key]
+
     speed_factor = transcription_config.speed_factor
     project_id = gcp_config.project_id
     location = gcp_config.location
@@ -389,11 +402,15 @@ async def download_transcription_jobs(
 
 
 async def transcribe_artifacts(
-    artifacts: AsyncGenerator[dict, None], verbose: bool = False
+    artifacts: AsyncGenerator[dict, None],
+    verbose: bool = False,
+    transcriber_key: str = "default",
 ) -> AsyncGenerator[dict, None]:
     # 1. Create jobs
     tasks = []
-    async for task in create_transcription_jobs(artifacts, verbose):
+    async for task in create_transcription_jobs(
+        artifacts, verbose, transcriber_key=transcriber_key
+    ):
         tasks.append(task)
 
     # 2. Poll jobs

@@ -40,16 +40,21 @@ class GenerateCoverConfig(BaseModel):
     spec: GenerateCoverSpecConfig = Field(default_factory=GenerateCoverSpecConfig)
 
 
-class TranscribeSpecConfig(BaseModel):
+class PodcastTranscriberRef(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    languages: List[str] = Field(default_factory=lambda: [])
+    ref: Optional[str] = None
+    # Optional inline config overrides
+    speed_factor: Optional[float] = None
+    languages: Optional[List[str]] = None
 
 
 class TranscribeConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     enable: bool = False
     retry_count: int = 0
-    spec: TranscribeSpecConfig = Field(default_factory=TranscribeSpecConfig)
+    podcast_transcriber: PodcastTranscriberRef = Field(
+        default_factory=PodcastTranscriberRef
+    )
 
 
 class RsyncTargetConfig(BaseModel):
@@ -147,6 +152,7 @@ class AgentConfig(BaseModel):
 class PodcastTranscriptionConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     speed_factor: float = 1.5
+    languages: List[str] = Field(default_factory=lambda: [])
 
 
 class AppConfig(BaseModel):
@@ -157,8 +163,8 @@ class AppConfig(BaseModel):
     podcast_generators: Dict[str, PodcastGenerationConfig] = Field(
         default_factory=lambda: {"default": PodcastGenerationConfig()}
     )
-    podcast_transcription: PodcastTranscriptionConfig = Field(
-        default_factory=PodcastTranscriptionConfig
+    podcast_transcribers: Dict[str, PodcastTranscriptionConfig] = Field(
+        default_factory=lambda: {"default": PodcastTranscriptionConfig()}
     )
     podcast_tags: PodcastTagsConfig = Field(default_factory=PodcastTagsConfig)
     workflow: WorkflowConfig = Field(default_factory=lambda: WorkflowConfig(root={}))

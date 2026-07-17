@@ -302,6 +302,7 @@ async def generate_download_and_tag_podcast(
     transcribe: bool = False,
     transcription_languages: Optional[list[str]] = None,
     transcribe_retry_count: int = 0,
+    transcriber_key: str = "default",
     verbose: bool = False,
 ):
     """Polls, downloads, and tags a specific generation task once complete."""
@@ -472,6 +473,7 @@ async def generate_download_and_tag_podcast(
                             async for transcribed in transcription.transcribe_artifacts(
                                 tagged_gen(),
                                 verbose=verbose,
+                                transcriber_key=transcriber_key,
                             ):
                                 tagged = transcribed
                                 success = True
@@ -603,7 +605,24 @@ async def run(
     if transcribe is None:
         transcribe = wf_config.transcribe.enable
 
-    transcription_langs = wf_config.transcribe.spec.languages
+    # Resolve podcast transcriber settings
+    transcriber_ref = wf_config.transcribe.podcast_transcriber
+    transcriber_name = transcriber_ref.ref or "default"
+
+    from podcaster.config import PodcastTranscriptionConfig
+
+    if transcriber_name in config.podcast_transcribers:
+        base_transcriber_config = config.podcast_transcribers[transcriber_name]
+    else:
+        base_transcriber_config = config.podcast_transcribers.get(
+            "default", PodcastTranscriptionConfig()
+        )
+
+    transcription_langs = (
+        transcriber_ref.languages
+        if transcriber_ref.languages is not None
+        else base_transcriber_config.languages
+    )
 
     # Resolve podcast generator settings
     generator_ref = wf_config.podcast_generator
@@ -907,6 +926,7 @@ async def run(
                 transcribe=transcribe,
                 transcription_languages=transcription_langs,
                 transcribe_retry_count=transcribe_retry_count,
+                transcriber_key=transcriber_name,
                 verbose=verbose,
             )
             for task in tasks

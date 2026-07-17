@@ -237,8 +237,13 @@ def transcription_group():
 @click.option(
     "--arg-json", multiple=True, help="JSON artifact object(s) to transcribe."
 )
+@click.option(
+    "--transcriber-key",
+    default="default",
+    help="Podcast transcriber key from configuration (default: default)",
+)
 @click.option("--verbose", "-v", is_flag=True, help="Enable verbose logging")
-def transcription_create(arg_json, verbose):
+def transcription_create(arg_json, transcriber_key, verbose):
     """Start transcription tasks for podcast artifacts. Accepts input from --arg-json or stdin."""
     setup_logging(verbose)
 
@@ -254,7 +259,9 @@ def transcription_create(arg_json, verbose):
                 async for item in stream_stdin():
                     yield item
 
-        async for task in transcription.create_transcription_jobs(input_gen(), verbose):
+        async for task in transcription.create_transcription_jobs(
+            input_gen(), verbose, transcriber_key=transcriber_key
+        ):
             click.echo(json.dumps(task))
             sys.stdout.flush()
 

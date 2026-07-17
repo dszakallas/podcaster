@@ -32,8 +32,10 @@ podcast_tags:
   album_artist: "Your Name"
   artists: ["Your Name"]
 
-podcast_transcription:
-  speed_factor: 1.5
+podcast_transcribers:
+  default:
+    speed_factor: 1.5
+    languages: ["cs", "en"]
 
 workflow:
   deep-dive-default:
@@ -54,8 +56,8 @@ workflow:
     transcribe:
       enable: true
       retry_count: 0
-      spec:
-        languages: ["cs", "en"]
+      podcast_transcriber:
+        ref: "default"
     distribute:
       - type: plex
         ref: my-media-server  # reference to a plex configuration
