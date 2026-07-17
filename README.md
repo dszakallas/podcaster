@@ -20,19 +20,55 @@ Automation tools for generating podcasts from articles and documents with Notebo
 - **Google GenAI API Key**: Required for cover art generation (set as `GOOGLE_API_KEY`).
 - **Plex Server**: Required if using the Plex sync feature.
 
-## Installation
+## Installation & Quick Start
 
-This project uses `devenv` for development. To enter the environment:
+### 1. Using `uvx` / `uv`
+
+Run `podcaster` directly without installing, or install it as a global tool using `uv`:
 
 ```bash
-devenv shell
+# Run podcaster directly
+uvx --from git+https://github.com/dszakallas/podcaster.git podcaster --help
+
+# Or install globally as a tool
+uv tool install git+https://github.com/dszakallas/podcaster.git
 ```
 
-Alternatively, using `uv`:
+For local development with `uv`:
 
 ```bash
 uv sync
 uv run podcaster --help
+```
+
+### 2. Using Nix (Flakes)
+
+Drop into an interactive shell with `podcaster` using modern `nix` commands:
+
+```bash
+# Run podcaster in a shell directly from GitHub
+nix shell github:dszakallas/podcaster
+
+# Or from a local clone
+nix shell .#podcaster
+```
+
+### 3. Building & Loading Docker Image
+
+Build the bundled Docker image tarball with Nix and load it into your local Docker daemon:
+
+```bash
+# Build the x86_64-linux Docker image tarball
+nix build .#dockerImages.x86_64-linux.podcaster
+
+# Load the image tarball into Docker
+docker load < result
+```
+
+### 4. Development Environment with `devenv`
+
+```bash
+devenv shell
 ```
 
 ## Configuration
@@ -72,6 +108,7 @@ podcaster workflow run deep-dive-default ./article.txt \
 ```
 
 This workflow will automatically:
+
 1. Create a NotebookLM notebook.
 2. Upload the source file or URL (triggering Playwright scraping if blocked).
 3. Perform web research to enrich the context based on `enrich_web` settings.
@@ -101,12 +138,15 @@ podcaster transcription download
 ### 3. Standalone Commands
 
 #### Import Web
+
 Imports a URL, respecting the `unimportables` and `scrape` fallback logic.
+
 ```bash
 podcaster import-web <notebook_id> <url>
 ```
 
 #### Create and initialize a local notebook
+
 Creates a new remote notebook or pulls details for an existing one, and initializes its local directory.
 
 > [!NOTE]
@@ -124,6 +164,7 @@ podcaster init-podcast-notebook --from-source ./article.txt
 ```
 
 #### Transcribe a podcast
+
 ```bash
 podcaster transcription create --arg-json '{"path": "./podcasts/episode.m4a", "metadata": {"generate-podcast": {"language": "en"}}}' | \
 podcaster transcription poll | \
@@ -131,42 +172,51 @@ podcaster transcription download
 ```
 
 #### Distribute a podcast (rsync/rclone)
+
 Distributes a podcast to a remote destination using a named preset or manual destination.
+
 ```bash
 podcaster dist-rsync <notebook_id> --preset backup-drive
 ```
 
 #### Distribute to Plex
+
 Distributes a notebook's podcasts to a Plex library using a named preset.
+
 ```bash
 podcaster dist-plex <notebook_id> --preset my-media-server
 ```
 
 #### Scrape a web target (standalone)
+
 Scrapes the main article text from a target URL using the configured agent.
+
 ```bash
 podcaster scrape <target_url> [--dry-run]
 ```
 
 #### Edit a workflow state
+
 Opens the workflow's state.json in the editor (using `$EDITOR`) for editing.
+
 ```bash
 podcaster workflow edit <notebook_id>
 ```
 
 #### Resume a workflow
+
 Resumes a failed or interrupted workflow run from its state file.
+
 ```bash
 podcaster workflow resume <notebook_id>
 ```
-
 
 ## Code Quality
 
 Three tools are enforced on all Python files under `src/podcaster/`:
 
 | Tool | Purpose | Command |
-|------|---------|---------|
+| --- | --- | --- |
 | **Black** | Formatting (check-only) | `uv run black --check src/podcaster` |
 | **Ruff** | Linting | `uv run ruff check src/podcaster` |
 | **Pyright** | Type checking (basic mode) | `uv run pyright src/podcaster` |
