@@ -1,8 +1,13 @@
+# Local directory where generated podcasts and metadata are stored
 podcast_dir: "podcasts"
+
+# Configured LLM/agent tools used for executing sub-tasks (like scraping)
 agents:
-  # agents are currently needed only for scraping
+  # Reference name for an agent definition
   agy-gemini-flash:
+    # Command prefix to invoke the agent
     command: "agy"
+    # Arguments passed to the command. {{ prompt }} is replaced with the prompt.
     args:
       - "--model"
       - "Gemini 3.5 Flash (Low)"
@@ -18,77 +23,140 @@ agents:
       - "-p"
       - "{{ prompt }}"
 
+# Scraper configuration used when extracting web page text/content
 scraper:
-  tool: "chrome-devtools"  # name of the mcp server to use for scraping
+  # The scraping tool/MCP server to run (e.g. "chrome-devtools" or "playwright")
+  tool: "chrome-devtools"
+  # The agent used to control/instruct the scraper
   agent:
-    ref: agy-gemini-flash  # reference to an agent configuration from above
+    # Reference to a defined agent from the 'agents' section above
+    ref: agy-gemini-flash
 
+# Configurations for generating podcasts using NotebookLM
 podcast_generators:
+  # Reference name for this generator configuration
   default:
+    # Target languages for generation (e.g., ["en", "hu"])
     languages: ["en", "hu"]
-    length: "default"  # short, default, long, or auto (inferred from article)
+    # Desired length bucket: "short" (<=12m), "default" (<=25m), "long" (>25m), or "auto" (inferred)
+    length: "default"
 
+# ID3 tagging settings for the generated audio files
 podcast_tags:
+  # The album artist tag applied to the MP3 files
   album_artist: "Your Name"
+  # The list of artists tags applied to the MP3 files
   artists: ["Your Name"]
 
+# Configurations for the transcription of generated podcast audio
 podcast_transcribers:
+  # Reference name for this transcriber configuration
   default:
+    # Audio speed factor applied during transcription preprocessing (speeds up audio for faster transcribing)
     speed_factor: 1.5
+    # Languages configured for transcription tasks
     languages: ["cs", "en"]
 
+# Workflow configurations for managing deep dive podcast generation pipelines
 workflow:
+  # Reference name of the workflow preset
   deep-dive-default:
+    # The workflow type (currently only "deep_dive_article" is supported)
     type: "deep_dive_article"
+    # The podcast generator settings (can refer to a key under 'podcast_generators' or be specified inline)
     podcast_generator:
+      # Reference to a key under 'podcast_generators'
       ref: "default"
+    # Web research & source enrichment options
     enrich_web:
+      # Enable web search and enrichment for the article
       enable: true
+      # Number of retries on failure (0 disables retries)
       retry_count: 0
+      # Enrichment spec settings
       spec:
+        # Maximum number of imported web articles/references
         max_imports: 5
+        # Mode of enrichment: "fast" or "deep"
         mode: "fast"
+        # If true, skips importing individual articles that fail instead of failing the whole task
         ignore_errors: false
+    # Podcast album cover art generation options
     generate_cover:
+      # Enable generating cover art using Imagen/Gemini
       enable: true
+      # Number of retries on failure (0 disables retries)
       retry_count: 0
+      # Cover generation spec settings (currently empty)
       spec: {}
+    # Audio transcription & LRC subtitle generation options
     transcribe:
+      # Enable transcription of the generated podcast audio
       enable: true
+      # Number of retries on failure (0 disables retries)
       retry_count: 0
+      # Transcriber settings (refers to a key under 'podcast_transcribers' or specified inline)
       podcast_transcriber:
+        # Reference to a key under 'podcast_transcribers'
         ref: "default"
+    # Distribution targets for deploying completed podcasts
     distribute:
+      # Deploy using Plex sync
       - type: plex
-        ref: my-media-server  # reference to a plex configuration
+        # Reference to a Plex destination config under the 'plex' section below
+        ref: my-media-server
+      # Deploy using Rsync/Rclone
       - type: rsync
-        ref: gdrive-backup  # reference to a rsync configuration
+        # Reference to an Rsync destination config under the 'rsync' section below
+        ref: gdrive-backup
 
+# Rsync and Rclone remote destination targets
 rsync:
+  # Target name
   main-server:
+    # Sync method: "rsync" or "rclone"
     method: "rsync"
+    # Remote destination path/URI
     destination: "user@host:/mnt/podcasts"
   gdrive-backup:
-    method: "rclone"  # rclone supported for uploading to cloud storage
+    method: "rclone"
     destination: "gdrive:podcasts"
+    # Optional flags passed directly to rclone execution
+    rclone_flags: []
 
+# Plex Media Server targets and libraries
 plex:
+  # Plex target name
   my-media-server:
+    # Optional rsync configuration to sync files to server before rescanning Plex library
     rsync:
-      enabled: true  # we can do rsync as part of plex sync
-      ref: main-server 
+      # Enable file synchronization
+      enabled: true
+      # Reference to a config key under the 'rsync' section
+      ref: main-server
+    # Section ID of the target library in Plex
     section_id: 14
+    # Library directory path on the Plex server
     server_library_path: "/mnt/podcasts"
+    # Base URL of the Plex server
     server_url: "http://localhost:32400"
+    # Plex authentication token
     token: "your-plex-token"
 
+# Google Cloud Platform configuration (required for cover generation and transcription)
 gcp:
+  # GCP project ID
   project_id: "your-gcp-project"
+  # GCP region/location for resource allocation
   location: "us-central1"
+  # GCS bucket name used for staging files during transcription
   gcs_bucket: "your-bucket"
 
+# Web research and scraping configurations
 research:
-  unimportables:  # sites blocked in NotebookLM, needs fallback import method
+  # Regex patterns for domains/URLs that cannot be imported to NotebookLM directly (requires scraping fallback)
+  unimportables:
     - "example\\.com"
     - "another-example\\.com"
+  # Fallback method when direct import fails: "ignore", "force", or "scrape"
   import_fallback: "scrape"
