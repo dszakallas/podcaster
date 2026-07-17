@@ -67,9 +67,20 @@ async def generate_tasks(
     length_str: Optional[str],
     format_args_json: str,
     dry_run: bool = False,
+    generator_key: str = "default",
 ) -> AsyncGenerator[dict, None]:
     config = load_config()
-    gen_defaults = config.podcast_generation
+    from ..config import PodcastGenerationConfig
+
+    if generator_key not in config.podcast_generators:
+        logger.warning(
+            f"Podcast generator '{generator_key}' not found in configuration. Using default."
+        )
+        gen_defaults = config.podcast_generators.get(
+            "default", PodcastGenerationConfig()
+        )
+    else:
+        gen_defaults = config.podcast_generators[generator_key]
 
     if not languages:
         languages = gen_defaults.languages

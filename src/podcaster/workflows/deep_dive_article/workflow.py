@@ -605,11 +605,34 @@ async def run(
 
     transcription_langs = wf_config.transcribe.spec.languages
 
-    gen_config = config.podcast_generation
+    # Resolve podcast generator settings
+    generator_ref = wf_config.podcast_generator
+    generator_name = generator_ref.ref or "default"
+
+    from podcaster.config import PodcastGenerationConfig
+
+    if generator_name in config.podcast_generators:
+        base_gen_config = config.podcast_generators[generator_name]
+    else:
+        base_gen_config = config.podcast_generators.get(
+            "default", PodcastGenerationConfig()
+        )
+
+    gen_languages = (
+        generator_ref.languages
+        if generator_ref.languages is not None
+        else base_gen_config.languages
+    )
+    gen_length = (
+        generator_ref.length
+        if generator_ref.length is not None
+        else base_gen_config.length
+    )
+
     if not length:
-        length = gen_config.length
+        length = gen_length
     if not languages:
-        languages = gen_config.languages
+        languages = gen_languages
 
     if length != "auto":
         length = resolve_duration(length)
@@ -861,6 +884,7 @@ async def run(
                 length,
                 json.dumps(format_args),
                 dry_run=False,
+                generator_key=generator_name,
             ):
                 tasks.append(task)
                 _append_generated_state(state, task)

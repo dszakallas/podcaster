@@ -23,9 +23,10 @@ scraper:
   agent:
     ref: agy-gemini-flash  # reference to an agent configuration from above
 
-podcast_generation:
-  languages: ["en", "hu"]
-  length: "default"  # short, default, long, or auto (inferred from article)
+podcast_generators:
+  default:
+    languages: ["en", "hu"]
+    length: "default"  # short, default, long, or auto (inferred from article)
 
 podcast_tags:
   album_artist: "Your Name"
@@ -37,6 +38,8 @@ podcast_transcription:
 workflow:
   deep-dive-default:
     type: "deep_dive_article"
+    podcast_generator:
+      ref: "default"
     enrich_web:
       enable: true
       retry_count: 0

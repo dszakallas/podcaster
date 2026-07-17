@@ -41,7 +41,6 @@ def podcast_group():
 @click.argument("notebook_id")
 @click.argument("type")
 @click.option(
-    "--language",
     "-l",
     multiple=True,
     help="Target language (repeatable, default from config or en)",
@@ -51,18 +50,36 @@ def podcast_group():
     type=click.Choice(["short", "default", "long", "auto"]),
     help="Target length (default from config or long)",
 )
+@click.option(
+    "--generator-key",
+    default="default",
+    help="Podcast generator key from configuration (default: default)",
+)
 @click.option("--format-args-json", help="JSON string with template arguments")
 @click.option("--dry-run", is_flag=True, help="Skip actual generation")
 @click.option("--verbose", "-v", is_flag=True, help="Enable verbose logging")
 def podcast_create(
-    notebook_id, type, language, length, format_args_json, dry_run, verbose
+    notebook_id,
+    type,
+    language,
+    length,
+    generator_key,
+    format_args_json,
+    dry_run,
+    verbose,
 ):
     """Generate podcasts using NotebookLM. Outputs task JSON."""
     setup_logging(verbose)
 
     async def run():
         async for task in audio_gen_core.generate_tasks(
-            notebook_id, type, language, length, format_args_json, dry_run
+            notebook_id,
+            type,
+            language,
+            length,
+            format_args_json,
+            dry_run,
+            generator_key=generator_key,
         ):
             click.echo(json.dumps(task))
             sys.stdout.flush()

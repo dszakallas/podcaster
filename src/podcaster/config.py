@@ -90,9 +90,18 @@ class DistributionTarget(BaseModel):
     rclone_flags: Optional[List[str]] = None
 
 
+class PodcastGeneratorRef(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    ref: Optional[str] = None
+    # Optional inline config if ref is not used
+    languages: Optional[List[str]] = None
+    length: Optional[Literal["short", "default", "long", "auto"]] = None
+
+
 class DeepDiveArticleConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     type: Literal["deep_dive_article"] = "deep_dive_article"
+    podcast_generator: PodcastGeneratorRef = Field(default_factory=PodcastGeneratorRef)
     enrich_web: EnrichWebConfig = Field(default_factory=EnrichWebConfig)
     generate_cover: GenerateCoverConfig = Field(default_factory=GenerateCoverConfig)
     transcribe: TranscribeConfig = Field(default_factory=TranscribeConfig)
@@ -145,8 +154,8 @@ class AppConfig(BaseModel):
     podcast_dir: str = "podcasts"
     scraper: ScraperConfig = Field(default_factory=ScraperConfig)
     agents: Dict[str, AgentConfig] = Field(default_factory=dict)
-    podcast_generation: PodcastGenerationConfig = Field(
-        default_factory=PodcastGenerationConfig
+    podcast_generators: Dict[str, PodcastGenerationConfig] = Field(
+        default_factory=lambda: {"default": PodcastGenerationConfig()}
     )
     podcast_transcription: PodcastTranscriptionConfig = Field(
         default_factory=PodcastTranscriptionConfig
