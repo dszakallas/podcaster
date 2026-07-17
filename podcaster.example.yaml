@@ -43,9 +43,9 @@ podcast_generators:
 
 # ID3 tagging settings for the generated audio files
 podcast_tags:
-  # The album artist tag applied to the MP3 files
+  # The album artist tag applied to the audio files
   album_artist: "Your Name"
-  # The list of artists tags applied to the MP3 files
+  # The list of artists tags applied to the audio files
   artists: ["Your Name"]
 
 # Configurations for the transcription of generated podcast audio
@@ -63,17 +63,13 @@ workflow:
   deep-dive-default:
     # The workflow type (currently only "deep_dive_article" is supported)
     type: "deep_dive_article"
-    # The podcast generator settings (can refer to a key under 'podcast_generators' or be specified inline)
     podcast_generator:
       # Reference to a key under 'podcast_generators'
       ref: "default"
     # Web research & source enrichment options
     enrich_web:
-      # Enable web search and enrichment for the article
       enable: true
-      # Number of retries on failure (0 disables retries)
       retry_count: 0
-      # Enrichment spec settings
       spec:
         # Maximum number of imported web articles/references
         max_imports: 5
@@ -83,17 +79,12 @@ workflow:
         ignore_errors: false
     # Podcast album cover art generation options
     generate_cover:
-      # Enable generating cover art using Imagen/Gemini
       enable: true
-      # Number of retries on failure (0 disables retries)
       retry_count: 0
-      # Cover generation spec settings (currently empty)
       spec: {}
     # Audio transcription & LRC subtitle generation options
     transcribe:
-      # Enable transcription of the generated podcast audio
       enable: true
-      # Number of retries on failure (0 disables retries)
       retry_count: 0
       # Transcriber settings (refers to a key under 'podcast_transcribers' or specified inline)
       podcast_transcriber:
@@ -112,11 +103,8 @@ workflow:
 
 # Rsync and Rclone remote destination targets
 rsync:
-  # Target name
   main-server:
-    # Sync method: "rsync" or "rclone"
     method: "rsync"
-    # Remote destination path/URI
     destination: "user@host:/mnt/podcasts"
   gdrive-backup:
     method: "rclone"
@@ -126,11 +114,9 @@ rsync:
 
 # Plex Media Server targets and libraries
 plex:
-  # Plex target name
   my-media-server:
     # Optional rsync configuration to sync files to server before rescanning Plex library
     rsync:
-      # Enable file synchronization
       enabled: true
       # Reference to a config key under the 'rsync' section
       ref: main-server
