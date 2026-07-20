@@ -1,0 +1,61 @@
+name: Build and Publish Docker Image
+
+on: # yamllint disable-line rule:truthy
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Docker image target to build"
+        required: true
+        default: podcaster
+        type: string
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            accept-flake-config = true
+            extra-experimental-features = configurable-impure-env fetch-tree flakes nix-command
+
+      - name: Setup Cachix
+        uses: cachix/cachix-action@v17
+        with:
+          name: devenv
+
+      - name: Build Docker image with Nix
+        id: build
+        run: |
+          IMAGE_PATH=$(nix build .#dockerImages.x86_64-linux.${{ inputs.target }} --print-out-paths)
+          echo "image_path=${IMAGE_PATH}" >> $GITHUB_OUTPUT
+
+      - name: Load Docker image
+        run: |
+          docker load < ${{ steps.build.outputs.image_path }}
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tag and push image
+        run: |
+          # Use the Nix store path hash as the tag
+          TAG=$(basename "${{ steps.build.outputs.image_path }}" | cut -d'-' -f1)
+          TARGET_IMAGE="ghcr.io/${{ github.repository_owner }}/${{ inputs.target }}:${TAG}"
+
+
+          docker tag ${{ inputs.target }}:latest ${TARGET_IMAGE}
+          docker push ${TARGET_IMAGE}
+
+          echo "Published image: ${TARGET_IMAGE}"
