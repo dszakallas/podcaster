@@ -15,34 +15,27 @@ logger = logging.getLogger(__name__)
 
 
 async def upload_source(
-    notebook_id: str, source_file: str, title: Optional[str] = None
+    notebook_id: str,
+    source_file: str,
+    title: Optional[str] = None,
+    import_handler: str = "default",
+    importer: Optional[str] = None,
 ) -> str:
     """Uploads a source file or URL and waits for processing."""
-    if source_file.startswith(("http://", "https://")):
-        from . import research
+    from . import research
 
-        res = await research.import_web_source(notebook_id, source_file, title=title)
-        if res.get("ignored"):
-            raise RuntimeError(f"Source URL was ignored (unimportable): {source_file}")
-        if "error" in res:
-            raise RuntimeError(
-                f"Failed to import source URL: {source_file}. Error: {res['error']}"
-            )
-
-        source_id = res.get("source_id")
-        if not source_id:
-            raise RuntimeError(f"Failed to obtain source ID for URL: {source_file}")
-        return source_id
-    else:
-        logger.debug(f"Uploading file source: {source_file}...")
-        storage_path = get_storage_path()
-        async with await RetryingNotebookLMClient.from_storage(
-            storage_path, timeout=120.0
-        ) as client:
-            source = await client.sources.add_file(
-                notebook_id, source_file, wait=True, wait_timeout=600.0
-            )
-            return source.id
+    handler = importer or import_handler
+    res = await research.import_source(
+        notebook_id, source_file, import_handler=handler, title=title
+    )
+    if "error" in res and res.get("error"):
+        raise RuntimeError(
+            f"Failed to import source: {source_file}. Error: {res['error']}"
+        )
+    source_id = res.get("source_id")
+    if not source_id:
+        raise RuntimeError(f"Failed to obtain source ID for: {source_file}")
+    return source_id
 
 
 async def init_notebook(
@@ -50,6 +43,8 @@ async def init_notebook(
     notebook_id: Optional[str] = None,
     podcast_dir: Optional[str] = None,
     from_source: Optional[str] = None,
+    import_handler: str = "default",
+    importer: Optional[str] = None,
 ) -> dict:
     """Initialize a notebook: creates/fetches a notebook and initializes its local directory.
 
@@ -62,6 +57,8 @@ async def init_notebook(
     config = load_config()
     if not podcast_dir:
         podcast_dir = config.podcast_dir
+
+    handler = importer or import_handler
 
     if from_source:
         async with await RetryingNotebookLMClient.from_storage(
@@ -87,7 +84,10 @@ async def init_notebook(
                 # Upload the first source
                 try:
                     source_id = await upload_source(
-                        created_notebook_id, from_source, title=title
+                        created_notebook_id,
+                        from_source,
+                        title=title,
+                        import_handler=handler,
                     )
                 except Exception as e:
                     logger.error(

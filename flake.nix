@@ -37,18 +37,22 @@
       let
         pkgs = nixpkgs.legacyPackages.${system};
 
+        ai-sdk-anthropic = pkgs.callPackage ./nix/ai-sdk-anthropic { };
+
         podcaster = pkgs.callPackage ./nix/package.nix {
           inherit pyproject-nix uv2nix pyproject-build-systems;
         };
 
         dockerImage = pkgs.callPackage ./nix/dockerImage.nix {
-          inherit podcaster;
+          inherit podcaster ai-sdk-anthropic;
         };
       in
       {
         packages = {
           default = podcaster;
           podcaster = podcaster;
+          dockerImage = dockerImage;
+          ai-sdk-anthropic = ai-sdk-anthropic;
         };
 
         dockerImages = {

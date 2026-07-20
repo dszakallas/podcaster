@@ -1,23 +1,39 @@
 {
-  dockerTools,
+  ai-sdk-anthropic,
+  bash,
   buildEnv,
   cacert,
-  bash,
   coreutils,
-  playwright-driver,
-  podcaster,
+  dockerTools,
   ffmpeg,
-  rsync,
+  opencode,
+  playwright-driver,
+  playwright-mcp,
+  podcaster,
   rclone,
+  replaceVars,
+  rsync,
+  runCommand,
 }:
 let
   playwright-browsers = playwright-driver.selectBrowsers {
-    withWebkit = true;
+    withWebkit = false;
     withChromium = false;
-    withChromiumHeadlessShell = false;
+    withChromiumHeadlessShell = true;
     withFirefox = false;
     withFfmpeg = true;
   };
+
+  opencodeConfig = replaceVars ./opencode.json {
+    playwrightMcpPath = "${playwright-mcp}/bin/playwright-mcp";
+    playwrightBrowsersPath = "${playwright-browsers}";
+    anthropicSdkPath = "${ai-sdk-anthropic}/lib/node_modules/@ai-sdk/anthropic";
+  };
+
+  opencodeConfigDir = runCommand "opencode-config-dir" { } ''
+    mkdir -p $out/etc
+    cp ${opencodeConfig} $out/etc/opencode.json
+  '';
 in
 dockerTools.buildImage {
   name = "podcaster";
@@ -33,6 +49,9 @@ dockerTools.buildImage {
       ffmpeg
       rsync
       rclone
+      opencode
+      playwright-mcp
+      opencodeConfigDir
     ];
     pathsToLink = [
       "/bin"
@@ -43,8 +62,10 @@ dockerTools.buildImage {
   config = {
     Entrypoint = [ "/bin/podcaster" ];
     Env = [
+      "HOME=/workspace"
       "PLAYWRIGHT_BROWSERS_PATH=${playwright-browsers}"
       "PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS=true"
+      "OPENCODE_CONFIG=/etc/opencode.json"
     ];
   };
 }

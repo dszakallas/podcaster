@@ -3,7 +3,7 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Awaitable, Optional, Union
+from typing import Any, Awaitable, Optional, Union
 
 from podcaster import cover, plex, research, tagging, transcription
 from podcaster import notebook as notebook_mod
@@ -284,10 +284,17 @@ async def _run_distribution_target(
 
 @task("upload_source", logger)
 async def upload_and_wait_source(
-    notebook_id: str, source_file: str, title: Optional[str] = None
+    notebook_id: str,
+    source_file: str,
+    title: Optional[str] = None,
+    import_handler: Any = "default",
+    importer: Optional[Any] = None,
 ) -> str:
     """Uploads a source file or URL and waits for processing."""
-    return await notebook_mod.upload_source(notebook_id, source_file, title=title)
+    handler = importer or import_handler
+    return await notebook_mod.upload_source(
+        notebook_id, source_file, title=title, import_handler=handler
+    )
 
 
 @task("process_podcast_task", logger)
@@ -666,7 +673,10 @@ async def run(
         logger.info(f"Resuming existing notebook: {notebook_id}")
     else:
         notebook_info = await notebook_mod.init_notebook(
-            title=title, podcast_dir=podcast_dir, from_source=source_file
+            title=title,
+            podcast_dir=podcast_dir,
+            from_source=source_file,
+            import_handler=wf_config.import_handler,
         )
         notebook_id = notebook_info["notebook_id"]
         derived_title = notebook_info["derived_title"]
@@ -840,6 +850,7 @@ async def run(
                 suggested_duration=suggested_len_val,
                 on_start_callback=on_enrich_start,
                 ignore_errors=ignore_errors,
+                fallback_mechanism=enrich_config.fallback_mechanism,
             )
             if state.enrichment:
                 state.enrichment[-1].status = "completed"

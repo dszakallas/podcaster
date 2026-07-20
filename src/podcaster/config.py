@@ -1,6 +1,13 @@
-from typing import Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Union
 
-from pydantic import BaseModel, ConfigDict, Field, RootModel
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    RootModel,
+    model_validator,
+)
 
 
 class PodcastGenerationConfig(BaseModel):
@@ -22,10 +29,71 @@ class EnrichWebSpecConfig(BaseModel):
     ignore_errors: bool = False
 
 
+class NativeHandlerConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class ScraperAgentConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    ref: Optional[str] = None
+    command: Optional[str] = None
+    args: Optional[List[str]] = None
+
+
+class ScraperRef(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    ref: Optional[str] = None
+    tool: Optional[str] = None
+    agent: Optional[ScraperAgentConfig] = None
+
+
+class ImportHandlerItemConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    ref: Optional[str] = None
+    match: Optional[List[str]] = None
+    native: Optional[NativeHandlerConfig] = None
+    scraper: Optional[ScraperRef] = None
+    chain: Optional["ChainHandlerConfig"] = None
+
+
+class ChainHandlerConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    handlers: List["ImportHandlerRef"] = Field(default_factory=list)
+
+
+class ImportHandlerConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    match: List[str] = Field(default_factory=lambda: [".*"])
+    native: Optional[NativeHandlerConfig] = None
+    scraper: Optional[ScraperRef] = None
+    chain: Optional[ChainHandlerConfig] = None
+
+
+class ImportHandlerRef(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    ref: Optional[str] = None
+    match: Optional[List[str]] = None
+    native: Optional[NativeHandlerConfig] = None
+    scraper: Optional[ScraperRef] = None
+    chain: Optional[ChainHandlerConfig] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _parse_string(cls, data: Any) -> Any:
+        if isinstance(data, str):
+            return {"ref": data}
+        return data
+
+
+ImportHandlerItemConfig.model_rebuild()
+ChainHandlerConfig.model_rebuild()
+
+
 class EnrichWebConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     enable: bool = True
     retry_count: int = 0
+    fallback_mechanism: Union[str, ImportHandlerRef] = "ignore"
     spec: EnrichWebSpecConfig = Field(default_factory=EnrichWebSpecConfig)
 
 
@@ -104,9 +172,13 @@ class PodcastGeneratorRef(BaseModel):
 
 
 class DeepDiveArticleConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
     type: Literal["deep_dive_article"] = "deep_dive_article"
     podcast_generator: PodcastGeneratorRef = Field(default_factory=PodcastGeneratorRef)
+    import_handler: ImportHandlerRef = Field(
+        default_factory=lambda: ImportHandlerRef(ref="default"),
+        validation_alias=AliasChoices("import_handler", "importer"),
+    )
     enrich_web: EnrichWebConfig = Field(default_factory=EnrichWebConfig)
     generate_cover: GenerateCoverConfig = Field(default_factory=GenerateCoverConfig)
     transcribe: TranscribeConfig = Field(default_factory=TranscribeConfig)
@@ -122,19 +194,6 @@ class GCPConfig(BaseModel):
     project_id: Optional[str] = None
     location: str = "us-central1"
     gcs_bucket: Optional[str] = None
-
-
-class ResearchConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    unimportables: List[str] = Field(default_factory=list)
-    import_fallback: Literal["ignore", "force", "scrape"] = "scrape"
-
-
-class ScraperAgentConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    ref: Optional[str] = None
-    command: Optional[str] = None
-    args: Optional[List[str]] = None
 
 
 class ScraperConfig(BaseModel):
@@ -158,7 +217,9 @@ class PodcastTranscriptionConfig(BaseModel):
 class AppConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     podcast_dir: str = "podcasts"
-    scraper: ScraperConfig = Field(default_factory=ScraperConfig)
+    scrapers: Dict[str, ScraperConfig] = Field(
+        default_factory=lambda: {"default": ScraperConfig(tool="playwright")}
+    )
     agents: Dict[str, AgentConfig] = Field(default_factory=dict)
     podcast_generators: Dict[str, PodcastGenerationConfig] = Field(
         default_factory=lambda: {"default": PodcastGenerationConfig()}
@@ -166,9 +227,37 @@ class AppConfig(BaseModel):
     podcast_transcribers: Dict[str, PodcastTranscriptionConfig] = Field(
         default_factory=lambda: {"default": PodcastTranscriptionConfig()}
     )
+    import_handlers: Dict[str, ImportHandlerConfig] = Field(
+        default_factory=lambda: {
+            "default": ImportHandlerConfig(
+                chain=ChainHandlerConfig(
+                    handlers=[
+                        ImportHandlerRef(ref="native"),
+                        ImportHandlerRef(ref="scraper"),
+                    ]
+                )
+            ),
+            "native": ImportHandlerConfig(
+                match=[
+                    ".*",
+                    "!https?://.*wsj\\.com/.*",
+                    "!https?://.*forbes\\.com/.*",
+                    "!https?://.*politico\\.eu/.*",
+                    "!https?://.*nytimes\\.com/.*",
+                    "!https?://.*hvg\\.hu/.*",
+                    "!https?://.*msn\\.com/.*",
+                    "!https?://.*archive\\.(ph|is)/.*",
+                ],
+                native=NativeHandlerConfig(),
+            ),
+            "scraper": ImportHandlerConfig(
+                match=["https?://.*", "!file:.*", "!gdrive:.*"],
+                scraper=ScraperRef(ref="default"),
+            ),
+        }
+    )
     podcast_tags: PodcastTagsConfig = Field(default_factory=PodcastTagsConfig)
     workflow: WorkflowConfig = Field(default_factory=lambda: WorkflowConfig(root={}))
     rsync: Dict[str, RsyncTargetConfig] = Field(default_factory=dict)
     plex: Dict[str, PlexTargetConfig] = Field(default_factory=dict)
     gcp: GCPConfig = Field(default_factory=GCPConfig)
-    research: ResearchConfig = Field(default_factory=ResearchConfig)

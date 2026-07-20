@@ -21,6 +21,7 @@ downloads/
 .gemini
 .antigravitycli
 opencode.json
+!nix/opencode.json
 
 # Python
 __pycache__/

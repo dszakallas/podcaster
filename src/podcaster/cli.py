@@ -408,56 +408,25 @@ def list_podcasts(podcast_dir, verbose):
 @click.argument("notebook_id")
 @click.argument("url")
 @click.option(
-    "--unimportables",
-    help="Path to a file with newline delimited regexes for unimportable sites",
+    "--import-handler",
+    "--importer",
+    "import_handler",
+    default="default",
+    help="Import handler to use for URL import",
 )
-@click.option(
-    "--import-fallback",
-    type=click.Choice(["ignore", "force", "scrape"]),
-    help="Fallback method for unimportable sites (default: from config or scrape)",
-)
-@click.option(
-    "--tool",
-    "-t",
-    help="The MCP scraping tool to use (e.g. playwright, chrome-devtools)",
-)
-@click.option("--command", help="The agent harness command (overrides config)")
-@click.option(
-    "--agent-arg",
-    multiple=True,
-    help="Arguments for the agent command (overrides config)",
-)
+@click.option("--title", help="Title for the imported source")
 @click.option("--verbose", "-v", is_flag=True, help="Enable verbose logging")
-def import_web(
-    notebook_id, url, unimportables, import_fallback, tool, command, agent_arg, verbose
-):
+def import_web(notebook_id, url, import_handler, title, verbose):
     """Import a web URL as a source to a notebook."""
     setup_logging(verbose)
 
     async def run():
         try:
-            import re
-
-            patterns = None
-            if unimportables:
-                with open(unimportables, "r") as f:
-                    patterns = [
-                        re.compile(line.strip(), re.IGNORECASE)
-                        for line in f
-                        if line.strip()
-                    ]
-
-            res = await research.import_web_source(
-                notebook_id,
-                url,
-                unimportables=patterns,
-                fallback_mode=import_fallback,
-                tool=tool,
-                command=command,
-                args=list(agent_arg) if agent_arg else None,
+            res = await research.import_source(
+                notebook_id, url, import_handler=import_handler, title=title
             )
 
-            if "error" in res:
+            if "error" in res and res.get("error"):
                 click.echo(json.dumps(res), err=True)
                 sys.exit(1)
             else:
@@ -476,23 +445,30 @@ def import_web(
 @click.argument("notebook_id")
 @click.argument("url_or_id")
 @click.option("--title", help="Title for the imported Drive document")
+@click.option(
+    "--import-handler",
+    "--importer",
+    "import_handler",
+    default="default",
+    help="Import handler to use",
+)
 @click.option("--verbose", "-v", is_flag=True, help="Enable verbose logging")
-def import_drive(notebook_id, url_or_id, title, verbose):
+def import_drive(notebook_id, url_or_id, title, import_handler, verbose):
     """Import a Google Drive document URL or ID as a source to a notebook."""
     setup_logging(verbose)
 
     async def run():
         try:
-            # If it looks like a URL, pass it, otherwise assume it's just the URL itself, import_web_source handles URLs.
-            # To be safe, construct a fake URL if it's just an ID
             if not url_or_id.startswith("http"):
                 url = f"https://docs.google.com/document/d/{url_or_id}/edit"
             else:
                 url = url_or_id
 
-            res = await research.import_web_source(notebook_id, url, title=title)
+            res = await research.import_source(
+                notebook_id, url, import_handler=import_handler, title=title
+            )
 
-            if "error" in res:
+            if "error" in res and res.get("error"):
                 click.echo(json.dumps(res), err=True)
                 sys.exit(1)
             else:
@@ -595,13 +571,8 @@ def research_poll(max_imports, arg_json, ignore_errors, verbose):
                 async for item in stream_stdin():
                     yield item
 
-        from .utils import load_config
-
-        config = load_config()
-        final_ignore_errors = ignore_errors or config.research.ignore_errors
-
         async for completed in research.poll_research_jobs(
-            input_gen(), max_imports, ignore_errors=final_ignore_errors
+            input_gen(), max_imports, ignore_errors=ignore_errors
         ):
             click.echo(json.dumps(completed))
             sys.stdout.flush()

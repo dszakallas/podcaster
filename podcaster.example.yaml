@@ -23,14 +23,15 @@ agents:
       - "-p"
       - "{{ prompt }}"
 
-# Scraper configuration used when extracting web page text/content
-scraper:
-  # The scraping tool/MCP server to run (e.g. "chrome-devtools" or "playwright")
-  tool: "chrome-devtools"
-  # The agent used to control/instruct the scraper
-  agent:
-    # Reference to a defined agent from the 'agents' section above
-    ref: agy-gemini-flash
+# Scraper configurations used when extracting web page text/content
+scrapers:
+  default:
+    # The scraping tool/MCP server to run (e.g. "chrome-devtools" or "playwright")
+    tool: "chrome-devtools"
+    # The agent used to control/instruct the scraper
+    agent:
+      # Reference to a defined agent from the 'agents' section above
+      ref: agy-gemini-flash
 
 # Configurations for generating podcasts using NotebookLM
 podcast_generators:
@@ -63,6 +64,9 @@ workflow:
   deep-dive-default:
     # The workflow type (currently only "deep_dive_article" is supported)
     type: "deep_dive_article"
+    # Reference to an import handler configuration under 'import_handlers'
+    import_handler:
+      ref: "default"
     podcast_generator:
       # Reference to a key under 'podcast_generators'
       ref: "default"
@@ -70,6 +74,7 @@ workflow:
     enrich_web:
       enable: true
       retry_count: 0
+      fallback_mechanism: "ignore"
       spec:
         # Maximum number of imported web articles/references
         max_imports: 5
@@ -100,6 +105,32 @@ workflow:
       - type: rsync
         # Reference to an Rsync destination config under the 'rsync' section below
         ref: gdrive-backup
+
+# Import handlers definition
+import_handlers:
+  default:
+    chain:
+      handlers:
+        - ref: native
+        - ref: scraper
+  native:
+    match:
+      - ".*"
+      - "!https?://.*wsj\\.com/.*"
+      - "!https?://.*forbes\\.com/.*"
+      - "!https?://.*politico\\.eu/.*"
+      - "!https?://.*nytimes\\.com/.*"
+      - "!https?://.*hvg\\.hu/.*"
+      - "!https?://.*msn\\.com/.*"
+      - "!https?://.*archive\\.(ph|is)/.*"
+    native: {}
+  scraper:
+    match:
+      - "https?://.*"
+      - "!file:.*"
+      - "!gdrive:.*"
+    scraper:
+      ref: default
 
 # Rsync and Rclone remote destination targets
 rsync:
@@ -137,12 +168,3 @@ gcp:
   location: "us-central1"
   # GCS bucket name used for staging files during transcription
   gcs_bucket: "your-bucket"
-
-# Web research and scraping configurations
-research:
-  # Regex patterns for domains/URLs that cannot be imported to NotebookLM directly (requires scraping fallback)
-  unimportables:
-    - "example\\.com"
-    - "another-example\\.com"
-  # Fallback method when direct import fails: "ignore", "force", or "scrape"
-  import_fallback: "scrape"

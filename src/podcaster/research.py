@@ -4,17 +4,264 @@ import logging
 import os
 import random
 import re
-from typing import Any, AsyncGenerator, Callable, List, Optional
+import tempfile
+from abc import ABC, abstractmethod
+from pathlib import Path
+from typing import Any, AsyncGenerator, Callable, List, Optional, Union
 
 from .utils import (
     RetryingNotebookLMClient,
     get_storage_path,
     load_config,
     parse_duration_minutes,
+    sanitize,
     setup_logging,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def normalize_source(source: str) -> str:
+    """Normalizes source strings so local file paths become file:// absolute URLs."""
+    if source.startswith(("http://", "https://", "gdrive:")):
+        return source
+
+    if source.startswith("file://"):
+        file_path = Path(source[7:]).resolve()
+        return file_path.as_uri()
+
+    p = Path(source)
+    if p.exists() or not source.startswith(
+        ("http://", "https://", "gdrive://", "file://")
+    ):
+        try:
+            return p.resolve().as_uri()
+        except Exception:
+            return source
+
+    return source
+
+
+class ImportHandler(ABC):
+    """Abstract interface for all import handlers."""
+
+    def __init__(self, match_expressions: Optional[List[str]] = None):
+        self.match_expressions = match_expressions or [".*"]
+
+    def matches(self, source: str) -> bool:
+        """Evaluates whether the source string matches this handler's criteria."""
+        source = normalize_source(source)
+        return evaluate_handler_match(self.match_expressions, source)
+
+    @abstractmethod
+    async def execute(
+        self,
+        notebook_id: str,
+        source: str,
+        title: Optional[str] = None,
+        client: Optional[RetryingNotebookLMClient] = None,
+    ) -> dict:
+        """Executes the import operation on a given source string."""
+        ...
+
+
+class NativeImportHandler(ImportHandler):
+    """Native import handler utilizing NotebookLM's built-in file/URL/Drive importer."""
+
+    def __init__(
+        self,
+        config: Optional[Any] = None,
+        match_expressions: Optional[List[str]] = None,
+    ):
+        super().__init__(match_expressions=match_expressions)
+        self.config = config
+
+    async def execute(
+        self,
+        notebook_id: str,
+        source: str,
+        title: Optional[str] = None,
+        client: Optional[RetryingNotebookLMClient] = None,
+    ) -> dict:
+        if not self.matches(source):
+            return {
+                "source_id": None,
+                "error": f"Source '{source}' did not match native import handler criteria.",
+            }
+        try:
+            src_id = await _import_native(
+                notebook_id, source, title=title, client=client
+            )
+            return {"source_id": src_id, "handler": "native"}
+        except Exception as e:
+            return {"source_id": None, "error": f"[native]: {e}"}
+
+
+class ScraperImportHandler(ImportHandler):
+    """Web scraper import handler using agent-driven web scraping."""
+
+    def __init__(
+        self,
+        config: Optional[Any] = None,
+        match_expressions: Optional[List[str]] = None,
+    ):
+        super().__init__(match_expressions=match_expressions)
+        self.config = config
+
+    async def execute(
+        self,
+        notebook_id: str,
+        source: str,
+        title: Optional[str] = None,
+        client: Optional[RetryingNotebookLMClient] = None,
+    ) -> dict:
+        if not self.matches(source):
+            return {
+                "source_id": None,
+                "error": f"Source '{source}' did not match scraper import handler criteria.",
+            }
+        try:
+            src_id = await _import_scraper(
+                notebook_id,
+                source,
+                scraper_config=self.config,
+                title=title,
+                client=client,
+            )
+            return {"source_id": src_id, "handler": "scraper"}
+        except Exception as e:
+            return {"source_id": None, "error": f"[scraper]: {e}"}
+
+
+class ChainImportHandler(ImportHandler):
+    """Composite import handler executing a chain of sub-handlers in priority order."""
+
+    def __init__(
+        self,
+        handlers: List[ImportHandler],
+        match_expressions: Optional[List[str]] = None,
+    ):
+        super().__init__(match_expressions=match_expressions)
+        self.handlers = handlers
+
+    async def execute(
+        self,
+        notebook_id: str,
+        source: str,
+        title: Optional[str] = None,
+        client: Optional[RetryingNotebookLMClient] = None,
+    ) -> dict:
+        if not self.matches(source):
+            return {
+                "source_id": None,
+                "error": f"Source '{source}' did not match chain import handler criteria.",
+            }
+
+        errors = []
+        for idx, sub_handler in enumerate(self.handlers):
+            logger.debug(
+                f"Chain handler executing sub-handler {idx} ({sub_handler.__class__.__name__}) on '{source}'"
+            )
+            res = await sub_handler.execute(
+                notebook_id, source, title=title, client=client
+            )
+            if res.get("source_id"):
+                return res
+            errors.append(res.get("error", f"Sub-handler {idx} failed"))
+
+        chained_errors = "; ".join(errors)
+        return {
+            "source_id": None,
+            "error": f"All sub-handlers in chain failed for '{source}': {chained_errors}",
+        }
+
+
+def build_import_handler(
+    handler_input: Any,
+    config: Any,
+    visited_refs: Optional[set[str]] = None,
+) -> ImportHandler:
+    """Constructs a concrete ImportHandler (NativeImportHandler, ScraperImportHandler, or ChainImportHandler)
+    from a handler name, ImportHandlerRef, or ImportHandlerConfig.
+    """
+    if visited_refs is None:
+        visited_refs = set()
+
+    override_match = None
+    if isinstance(handler_input, str) or handler_input is None:
+        name = handler_input or "default"
+        if name in visited_refs:
+            raise ValueError(f"Circular reference detected in import handlers: {name}")
+        if name not in config.import_handlers:
+            raise ValueError(f"Import handler '{name}' not found in configuration.")
+        visited_refs.add(name)
+        handler_cfg = config.import_handlers[name]
+    elif hasattr(handler_input, "ref") and getattr(handler_input, "ref", None):
+        ref = getattr(handler_input, "ref")
+        if ref in visited_refs:
+            raise ValueError(f"Circular reference detected in import handlers: {ref}")
+        if ref not in config.import_handlers:
+            raise ValueError(f"Import handler '{ref}' not found in configuration.")
+        visited_refs.add(ref)
+        handler_cfg = config.import_handlers[ref]
+        override_match = getattr(handler_input, "match", None)
+    else:
+        handler_cfg = handler_input
+        override_match = getattr(handler_input, "match", None)
+
+    match_rules = (
+        override_match
+        if override_match is not None
+        else (getattr(handler_cfg, "match", None) or [".*"])
+    )
+
+    if (
+        getattr(handler_cfg, "native", None) is not None
+        or getattr(handler_cfg, "type", None) == "native"
+    ):
+        return NativeImportHandler(
+            config=getattr(handler_cfg, "native", None),
+            match_expressions=match_rules,
+        )
+    elif (
+        getattr(handler_cfg, "scraper", None) is not None
+        or getattr(handler_cfg, "type", None) == "scraper"
+    ):
+        return ScraperImportHandler(
+            config=getattr(handler_cfg, "scraper", None),
+            match_expressions=match_rules,
+        )
+    elif (
+        getattr(handler_cfg, "chain", None) is not None
+        or getattr(handler_cfg, "type", None) == "chain"
+    ):
+        chain_cfg = getattr(handler_cfg, "chain", None)
+        sub_refs = getattr(chain_cfg, "handlers", []) if chain_cfg else []
+        sub_handlers = [
+            build_import_handler(sub_ref, config, visited_refs=set(visited_refs))
+            for sub_ref in sub_refs
+        ]
+        return ChainImportHandler(
+            handlers=sub_handlers,
+            match_expressions=match_rules,
+        )
+    else:
+        raise ValueError(
+            f"Could not construct ImportHandler from handler configuration: {handler_input}"
+        )
+
+
+async def execute_import_handler(
+    handler_input: Any,
+    notebook_id: str,
+    source: str,
+    title: Optional[str] = None,
+    client: Optional[RetryingNotebookLMClient] = None,
+) -> dict:
+    """Executes an import handler on a source string using the ImportHandler interface."""
+    config = load_config()
+    handler = build_import_handler(handler_input, config)
+    return await handler.execute(notebook_id, source, title=title, client=client)
 
 
 async def scrape_source(
@@ -28,29 +275,33 @@ async def scrape_source(
     from jinja2 import Template
 
     config = load_config()
+
+    if tool is None or command is None:
+        scraper_def = None
+        if "default" in config.scrapers:
+            scraper_def = config.scrapers["default"]
+        elif config.scrapers:
+            scraper_def = next(iter(config.scrapers.values()))
+
+        if tool is None and scraper_def:
+            tool = scraper_def.tool
+
+        if command is None and scraper_def and scraper_def.agent:
+            ag = scraper_def.agent
+            if ag.ref and ag.ref in config.agents:
+                agent_def = config.agents[ag.ref]
+                command = agent_def.command
+                args = agent_def.args
+            elif ag.command:
+                command = ag.command
+                args = ag.args or []
+
     if tool is None:
-        tool = getattr(config.scraper, "tool", "playwright")
+        tool = "playwright"
 
     if command is None:
-        agent_config = getattr(config.scraper, "agent", None)
-        if agent_config:
-            if agent_config.ref:
-                agent_def = config.agents.get(agent_config.ref)
-                if not agent_def:
-                    raise ValueError(
-                        f"Agent reference '{agent_config.ref}' not found in top-level agents configuration."
-                    )
-                agent_command = agent_def.command
-                agent_args = agent_def.args
-            elif agent_config.command:
-                agent_command = agent_config.command
-                agent_args = agent_config.args or []
-            else:
-                agent_command = "gemini"
-                agent_args = ["-p", "{{ prompt }}"]
-        else:
-            agent_command = "gemini"
-            agent_args = ["-p", "{{ prompt }}"]
+        agent_command = "gemini"
+        agent_args = ["-p", "{{ prompt }}"]
     else:
         agent_command = command
         agent_args = args or []
@@ -60,6 +311,8 @@ async def scrape_source(
         "If you encounter bot detection, cookie consent banners, paywalls, or blank pages, attempt to bypass them. "
         "Useful techniques include: waiting for elements, dismissing cookie/consent popups, scrolling the page "
         "naturally, and emulating a common device viewport or user agent if supported by the tool. "
+        "If the article is locked behind a paywall (such as if the article text does not show at all, is abruptly ending in the middle, "
+        "or displays a callout to login/register to view the full content), bail out immediately and return a JSON object with an error key. "
         "Extract the article content, title, author, and creation date. "
         "In addition, find all hyperlinks within the article body that are "
         "useful for content enrichment. Extract 3-5 keywords summarizing the article's topics, and find "
@@ -67,7 +320,8 @@ async def scrape_source(
         "Finally, respond with a single, valid NDJSON object on a single line without whitespace in this exact "
         'format: {"url":"...","title":"...","author":"...","created_at":"<date>","content":"<extracted content>","links":[...],"keywords":[...]}. '
         "If any failure occurs, return instead: "
-        '{"error":"<error description>"}. Make sure that the browser is closed in the end. '
+        '{"error":"<error description>"}. After scraping spend up to a minute on the site, moving the mouse, scrolling, clicking on a few links, '
+        "emulating what a real user would do as an anti-bot evasion measure. Make sure that the browser is closed in the end. "
         "Do not output any markdown code blocks or additional text."
     )
 
@@ -90,19 +344,31 @@ async def scrape_source(
         *cmd_args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
     )
 
-    stdout, stderr = await process.communicate()
+    stderr_lines: list[str] = []
+
+    async def _log_stderr() -> None:
+        if process.stderr:
+            while True:
+                line = await process.stderr.readline()
+                if not line:
+                    break
+                line_str = line.decode().rstrip()
+                if line_str:
+                    logger.info(line_str)
+                    stderr_lines.append(line_str)
+
+    stderr_task = asyncio.create_task(_log_stderr())
+    stdout_bytes, _ = await process.communicate()
+    await stderr_task
 
     if process.returncode != 0:
-        error_msg = stderr.decode().strip()
+        error_msg = "\n".join(stderr_lines).strip()
         raise RuntimeError(
             f"Scraping failed with exit code {process.returncode}: {error_msg}"
         )
 
-    output = stdout.decode().strip()
+    output = stdout_bytes.decode().strip()
     try:
-        # agy might output some log lines before the final NDJSON, let's look for the JSON line
-        # but the prompt specifically asks for a single line of NDJSON without whitespace.
-        # However, it's safer to find the last line that looks like JSON.
         json_line = None
         for line in reversed(output.splitlines()):
             line = line.strip()
@@ -132,8 +398,8 @@ async def scrape(
     args: Optional[List[str]] = None,
     dry_run: bool = False,
 ) -> Optional[dict]:
-    """
-    Scrapes a target URL and returns a dictionary containing the content and metadata.
+    """Scrapes a target URL and returns a dictionary containing the content and metadata.
+
     If dry_run is True, it logs the command that would be executed and returns None.
     """
     return await scrape_source(
@@ -143,11 +409,9 @@ async def scrape(
 
 def extract_drive_file_id(url: str) -> Optional[str]:
     """Extracts the Google Drive file ID from a URL."""
-    # Docs/Slides/Sheets pattern: /d/<ID>/
     match = re.search(r"/d/([^/]+)", url)
     if match:
         return match.group(1)
-    # Generic drive/file/d/<ID> pattern
     match = re.search(r"id=([^&]+)", url)
     if match:
         return match.group(1)
@@ -155,6 +419,193 @@ def extract_drive_file_id(url: str) -> Optional[str]:
     if match:
         return match.group(1)
     return None
+
+
+def evaluate_handler_match(match_expressions: List[str], source: str) -> bool:
+    """Evaluates regex matcher expressions in order for a given source string.
+
+    A leading '!' removes an existing match if the pattern matches.
+    A positive expression sets match to True if the pattern matches.
+    Initial state: matched = False.
+    """
+    matched = False
+    for expr in match_expressions:
+        if expr.startswith("!"):
+            pattern = expr[1:]
+            if re.search(pattern, source):
+                matched = False
+        else:
+            pattern = expr
+            if re.search(pattern, source):
+                matched = True
+    return matched
+
+
+async def _import_native(
+    notebook_id: str,
+    source: str,
+    title: Optional[str] = None,
+    client: Optional[RetryingNotebookLMClient] = None,
+) -> str:
+    if client is None:
+        raise ValueError("Client is required for _import_native")
+
+    if (
+        "docs.google.com" in source
+        or "drive.google.com" in source
+        or source.startswith("gdrive:")
+    ):
+        if source.startswith("gdrive:"):
+            file_id = source.split("gdrive:", 1)[1]
+        else:
+            file_id = extract_drive_file_id(source)
+
+        if not file_id:
+            raise ValueError(
+                f"Could not extract Google Drive file ID from URL: {source}"
+            )
+
+        logger.debug(f"Native import: Google Drive file ID {file_id}")
+        src_obj = await client.sources.add_drive(
+            notebook_id,
+            file_id,
+            title=title or "Drive Source",
+            wait=True,
+            wait_timeout=600.0,
+        )
+        return src_obj.id
+
+    clean_path = source
+    if clean_path.startswith("file://"):
+        clean_path = clean_path[7:]
+
+    if os.path.exists(clean_path):
+        logger.debug(f"Native import: Local file {clean_path}")
+        src_obj = await client.sources.add_file(
+            notebook_id, clean_path, wait=True, wait_timeout=600.0
+        )
+        return src_obj.id
+
+    if source.startswith(("http://", "https://")):
+        logger.debug(f"Native import: Web URL {source}")
+        src_obj = await client.sources.add_url(notebook_id, source, wait=False)
+        await client.sources.wait_until_ready(notebook_id, src_obj.id, timeout=600.0)
+        return src_obj.id
+
+    raise ValueError(f"Native importer cannot handle source format: {source}")
+
+
+async def _import_scraper(
+    notebook_id: str,
+    source: str,
+    scraper_config: Optional[Any] = None,
+    title: Optional[str] = None,
+    client: Optional[RetryingNotebookLMClient] = None,
+) -> str:
+    if client is None:
+        raise ValueError("Client is required for _import_scraper")
+
+    if (
+        not source.startswith(("http://", "https://"))
+        or "docs.google.com" in source
+        or "drive.google.com" in source
+    ):
+        raise ValueError(f"Scraper handler only supports web URLs, got: {source}")
+
+    tool = None
+    command = None
+    args = None
+    config = load_config()
+
+    if scraper_config:
+        scraper_def = None
+        ref = getattr(scraper_config, "ref", None)
+        if ref and ref in config.scrapers:
+            scraper_def = config.scrapers[ref]
+        elif ref and ref in config.agents:
+            agent_def = config.agents[ref]
+            command = agent_def.command
+            args = agent_def.args
+
+        if scraper_def:
+            tool = scraper_def.tool
+            if scraper_def.agent:
+                ag = scraper_def.agent
+                if ag.ref and ag.ref in config.agents:
+                    agent_def = config.agents[ag.ref]
+                    command = agent_def.command
+                    args = agent_def.args
+                elif ag.command:
+                    command = ag.command
+                    args = ag.args or []
+
+        if getattr(scraper_config, "tool", None):
+            tool = scraper_config.tool
+
+        ag_inline = getattr(scraper_config, "agent", None)
+        if ag_inline:
+            if getattr(ag_inline, "ref", None) and ag_inline.ref in config.agents:
+                agent_def = config.agents[ag_inline.ref]
+                command = agent_def.command
+                args = agent_def.args
+            elif getattr(ag_inline, "command", None):
+                command = ag_inline.command
+                args = ag_inline.args or []
+
+    res = await scrape_source(source, tool=tool, command=command, args=args)
+    if not res or not res.get("content"):
+        error_msg = res.get("error") if res else "No response"
+        raise RuntimeError(f"Scraping returned no content: {error_msg}")
+
+    scraped_title = title or res.get("title") or "Untitled"
+    scraped_author = res.get("author") or "Unknown"
+    scraped_created_at = res.get("created_at") or "Unknown"
+    scraped_url = res.get("url") or source
+
+    file_content = (
+        f"URL: {scraped_url}\n"
+        f"Title: {scraped_title}\n"
+        f"Author: {scraped_author}\n"
+        f"Creation Date: {scraped_created_at}\n\n"
+        f"{res.get('content', '')}"
+    )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        safe_title = sanitize(scraped_title)
+        temp_filepath = os.path.join(tmpdir, f"article_{safe_title}.txt")
+        with open(temp_filepath, "w", encoding="utf-8") as f:
+            f.write(file_content)
+
+        src_obj = await client.sources.add_file(
+            notebook_id, temp_filepath, wait=True, wait_timeout=600.0
+        )
+        return src_obj.id
+
+
+async def import_source(
+    notebook_id: str,
+    source: str,
+    import_handler: Optional[Union[str, Any]] = "default",
+    title: Optional[str] = None,
+    client: Optional[RetryingNotebookLMClient] = None,
+    importer: Optional[Union[str, Any]] = None,
+) -> dict:
+    """Imports a source into NotebookLM using configured import handler (native, scraper, or chain)."""
+    target_handler = importer if importer is not None else import_handler
+    source = normalize_source(source)
+
+    if client is not None:
+        return await execute_import_handler(
+            target_handler, notebook_id, source, title=title, client=client
+        )
+
+    storage_path = get_storage_path()
+    async with await RetryingNotebookLMClient.from_storage(
+        storage_path, timeout=120.0
+    ) as c:
+        return await execute_import_handler(
+            target_handler, notebook_id, source, title=title, client=c
+        )
 
 
 async def import_web_source(
@@ -166,103 +617,12 @@ async def import_web_source(
     tool: Optional[str] = None,
     command: Optional[str] = None,
     args: Optional[List[str]] = None,
+    import_handler: str = "default",
+    importer: Optional[str] = None,
 ) -> dict:
-    """
-    Imports a web URL or Google Drive link as a source to a notebook with fallback handling.
-    Returns a dict with source_id and potentially an error or filename.
-    """
-    config = load_config()
-
-    # Check if it's a Google Drive link
-    if "docs.google.com" in url or "drive.google.com" in url:
-        file_id = extract_drive_file_id(url)
-        if file_id:
-            logger.debug(f"Detected Google Drive URL, extracting file ID: {file_id}")
-            storage_path = get_storage_path()
-            async with await RetryingNotebookLMClient.from_storage(
-                storage_path, timeout=120.0
-            ) as client:
-                try:
-                    # We use a placeholder title if none provided, NotebookLM will likely rename it
-                    source = await client.sources.add_drive(
-                        notebook_id,
-                        file_id,
-                        title=title or "Drive Source",
-                        wait=True,
-                        wait_timeout=600.0,
-                    )
-                    return {"source_id": source.id, "drive": True}
-                except Exception as e:
-                    return {"source_id": None, "error": str(e)}
-
-    if unimportables is None:
-        patterns = config.research.unimportables
-        unimportables = [re.compile(p, re.IGNORECASE) for p in patterns]
-
-    if fallback_mode is None:
-        fallback_mode = config.research.import_fallback
-
-    # Check if URL matches any unimportable pattern
-    is_unimportable = any(p.search(url) for p in unimportables)
-
-    if is_unimportable:
-        logger.debug(f"URL matches unimportable pattern: {url}")
-        if fallback_mode == "ignore":
-            logger.info(f"Ignoring unimportable URL: {url}")
-            return {"source_id": None, "ignored": True}
-        elif fallback_mode == "scrape":
-            res = await scrape_source(url, tool=tool, command=command, args=args)
-            if not res or not res.get("content"):
-                error_msg = res.get("error") if res else "No response"
-                return {
-                    "source_id": None,
-                    "error": f"Scraping returned no content: {error_msg}",
-                }
-
-            import tempfile
-
-            from .utils import sanitize
-
-            scraped_title = res.get("title") or "Untitled"
-            scraped_author = res.get("author") or "Unknown"
-            scraped_created_at = res.get("created_at") or "Unknown"
-            scraped_url = res.get("url") or url
-
-            file_content = (
-                f"URL: {scraped_url}\n"
-                f"Title: {scraped_title}\n"
-                f"Author: {scraped_author}\n"
-                f"Creation Date: {scraped_created_at}\n\n"
-                f"{res.get('content', '')}"
-            )
-
-            with tempfile.TemporaryDirectory() as tmpdir:
-                safe_title = sanitize(scraped_title)
-                temp_filepath = os.path.join(tmpdir, f"article_{safe_title}.txt")
-                with open(temp_filepath, "w", encoding="utf-8") as f:
-                    f.write(file_content)
-
-                storage_path = get_storage_path()
-                async with await RetryingNotebookLMClient.from_storage(
-                    storage_path, timeout=120.0
-                ) as client:
-                    source = await client.sources.add_file(
-                        notebook_id, temp_filepath, wait=True, wait_timeout=600.0
-                    )
-                    return {"source_id": source.id, "scraped": True}
-        # "force" continues below
-
-    storage_path = get_storage_path()
-    async with await RetryingNotebookLMClient.from_storage(
-        storage_path, timeout=120.0
-    ) as client:
-        try:
-            source = await client.sources.add_url(notebook_id, url, wait=False)
-            source_id = source.id
-            await client.sources.wait_until_ready(notebook_id, source_id, timeout=600.0)
-            return {"source_id": source_id}
-        except Exception as e:
-            return {"source_id": None, "error": str(e)}
+    """Delegates to import_source for generalized importing with fallback."""
+    handler = importer or import_handler
+    return await import_source(notebook_id, url, import_handler=handler, title=title)
 
 
 async def create_research_job(
@@ -350,6 +710,7 @@ async def poll_research_jobs(
     tasks: AsyncGenerator[dict, None],
     max_imports: Optional[int] = None,
     ignore_errors: bool = False,
+    fallback_mechanism: str = "ignore",
 ) -> AsyncGenerator[dict, None]:
     storage_path = get_storage_path()
     async with await RetryingNotebookLMClient.from_storage(
@@ -395,30 +756,57 @@ async def poll_research_jobs(
             imported = []
             if sources_to_import:
                 logger.debug(f"Importing {len(sources_to_import)} sources...")
-                if ignore_errors:
+                for src in sources_to_import:
+                    src_url = src.get("url") if isinstance(src, dict) else str(src)
                     try:
-                        imported = await client.research.import_sources(
-                            notebook_id, task_id, sources_to_import
+                        single_imported = await client.research.import_sources(
+                            notebook_id, task_id, [src]
                         )
+                        imported.extend(single_imported)
                     except Exception as e:
                         logger.warning(
-                            f"Batch import failed: {e}. Retrying sources one-by-one..."
+                            f"NotebookLM import failed for research source '{src_url}': {e}"
                         )
-                        imported = []
-                        for src in sources_to_import:
+                        if fallback_mechanism != "ignore":
                             try:
-                                single_imported = await client.research.import_sources(
-                                    notebook_id, task_id, [src]
+                                imp_res = await import_source(
+                                    notebook_id,
+                                    src_url,
+                                    importer=fallback_mechanism,
+                                    client=client,
                                 )
-                                imported.extend(single_imported)
-                            except Exception as se:
+                                if imp_res.get("source_id"):
+                                    imported.append(
+                                        {"id": imp_res["source_id"], "url": src_url}
+                                    )
+                                else:
+                                    logger.warning(
+                                        f"Fallback import failed for '{src_url}': {imp_res.get('error')}"
+                                    )
+                            except Exception as fe:
                                 logger.warning(
-                                    f"Failed to import source {src.get('url')}: {se}. Skipping."
+                                    f"Fallback import exception for '{src_url}': {fe}"
                                 )
-                else:
-                    imported = await client.research.import_sources(
-                        notebook_id, task_id, sources_to_import
-                    )
+                        else:
+                            logger.info(f"Ignoring failed research source: {src_url}")
+                            try:
+                                sources_list = await client.sources.list(notebook_id)
+                                for existing_src in sources_list or []:
+                                    src_u = getattr(
+                                        existing_src, "url", None
+                                    ) or getattr(existing_src, "title", "")
+                                    src_status = getattr(existing_src, "status", None)
+                                    if src_u == src_url or src_status == "error":
+                                        logger.info(
+                                            f"Removing failed/errored source from NotebookLM: {existing_src.id}"
+                                        )
+                                        await client.sources.delete(
+                                            notebook_id, existing_src.id
+                                        )
+                            except Exception as delete_err:
+                                logger.debug(
+                                    f"Error checking/deleting failed source: {delete_err}"
+                                )
 
             yield {
                 **task,
@@ -441,6 +829,7 @@ async def research_from_source(
     suggested_duration: Optional[str] = None,
     on_start_callback: Optional[Callable[[str, str, str, str], Any]] = None,
     ignore_errors: bool = False,
+    fallback_mechanism: str = "ignore",
 ) -> dict:
     if verbose:
         setup_logging(verbose)
@@ -466,7 +855,10 @@ async def research_from_source(
 
     res = None
     async for r in poll_research_jobs(
-        task_gen(), max_imports, ignore_errors=ignore_errors
+        task_gen(),
+        max_imports,
+        ignore_errors=ignore_errors,
+        fallback_mechanism=fallback_mechanism,
     ):
         res = r
     if res is None:
