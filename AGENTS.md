@@ -28,6 +28,17 @@ The project uses a **preset-based** configuration system for workflows and distr
   - Use `--from-source <path_or_url>` to create a new notebook, upload the first source, and derive/rename the title automatically after successful upload. In case of failure, the remote notebook is cleaned up (deleted).
   - Use `--title <title>` or `--notebook-id <id>` for standard initialization without importing a source.
 
+## Article Importing & Web Scraping
+
+- **Import Handlers Architecture**: Ingestion is managed via composable import handlers implementing the `ImportHandler` interface (`NativeImportHandler`, `ScraperImportHandler`, `ChainImportHandler`):
+  - `native`: Direct NotebookLM upload for URLs, Google Drive links, and local files.
+  - `scraper`: Agent-driven web scraper configured via top-level `scrapers:` section.
+  - `chain`: Composite handler executing a list of sub-handlers (`handlers`) in priority order with fallback on failure.
+- **Source Normalization**: Input sources (local paths, `file://` URLs, web URLs, Drive links) are normalized into absolute `file://` URIs before match evaluation (`normalize_source`).
+- **Match Expressions**: Handlers use regex match rules (including negative patterns starting with `!` like `!https?://.*wsj\\.com/.*`) to determine applicability. Handlers without a `match` block implicitly default to `[".*"]`.
+- **Paywall Detection**: Scraper agent prompts detect paywalls (missing text, mid-article truncation, or login/register overlays) and bail out with a structured JSON error payload.
+- **Research Enrichment Fallback**: Web research jobs use `fallback_mechanism` (an import handler name, `ImportHandlerRef`, or `"ignore"`). Errored remote sources are automatically deleted when `"ignore"` is used.
+
 ## Code Quality Checks
 
 After every coding task, and at minimum before each commit, you must pass all three checks:
@@ -62,18 +73,25 @@ Files in this directory are ignored from git. These scripts should use the follo
 For granular control, the project supports a pipable long-running task protocol divided into `create`, `poll`, and `download` steps:
 
 - **Podcast Generation**:
+
   ```bash
   uv run podcaster podcast create <notebook_id> <type_name> -l <lang> | uv run podcaster podcast poll | uv run podcaster podcast download
   ```
+
 - **Cover Generation**:
+
   ```bash
   uv run podcaster cover create <notebook_id> | uv run podcaster cover poll | uv run podcaster cover download
   ```
+
 - **Web Research / Enrichment**:
+
   ```bash
   uv run podcaster research create <notebook_id> <source_id> | uv run podcaster research poll
   ```
+
 - **Transcription**:
+
   ```bash
   uv run podcaster transcription create | uv run podcaster transcription poll | uv run podcaster transcription download
   ```

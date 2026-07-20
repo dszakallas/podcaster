@@ -139,10 +139,15 @@ podcaster transcription download
 
 #### Import Web
 
-Imports a URL, respecting the `unimportables` and `scrape` fallback logic.
+Imports a URL, Google Drive link, or local file into a notebook using configurable import handlers (`import_handlers:` section in `podcaster.yaml`).
+Source inputs are normalized to absolute `file://` URIs for local files before matcher evaluation (`normalize_source`). Handlers evaluate regex match patterns (including negative patterns like `!https?://.*wsj\\.com/.*` for paywalled or unimportable sites).
 
 ```bash
+# Standard import using default chain handler (native -> scraper)
 podcaster import-web <notebook_id> <url>
+
+# Use a specific import handler preset
+podcaster import-web <notebook_id> <url> --import-handler scraper
 ```
 
 #### Create and initialize a local notebook

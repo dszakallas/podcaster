@@ -14,13 +14,13 @@ downloads/
 .pre-commit-config.yaml
 
 # Tools/IDEs
-.mcp.json
-.copilot
-.agents/mcp_config.json
-.vscode
-.gemini
-.antigravitycli
-opencode.json
+/.mcp.json
+/.copilot
+/.agents/mcp_config.json
+/.vscode
+/.gemini
+/.antigravitycli
+/opencode.json
 !nix/opencode.json
 
 # Python

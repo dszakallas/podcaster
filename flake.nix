@@ -39,11 +39,11 @@
 
         ai-sdk-anthropic = pkgs.callPackage ./nix/ai-sdk-anthropic { };
 
-        podcaster = pkgs.callPackage ./nix/package.nix {
+        podcaster = pkgs.callPackage ./nix/podcaster.nix {
           inherit pyproject-nix uv2nix pyproject-build-systems;
         };
 
-        dockerImage = pkgs.callPackage ./nix/dockerImage.nix {
+        dockerImage = pkgs.callPackage ./nix/podcaster-docker {
           inherit podcaster ai-sdk-anthropic;
         };
       in
