@@ -235,39 +235,6 @@ def get_or_create_notebook_dir(
     return notebook_dir
 
 
-def rsync_dir(src: str, dst: str):
-    """Rsyncs a directory to a destination, creating parent if needed."""
-    import subprocess
-
-    os.makedirs(os.path.dirname(dst.rstrip("/")), exist_ok=True)
-    # --mkpath is only in newer rsync, so we use mkdir -p via python first
-    # We want to rsync the contents of the notebook folder to a folder of the same name at dst
-    cmd = [
-        "rsync",
-        "-avz",
-        "--include=*/",
-        "--include=*.m4a",
-        "--include=*.lrc",
-        "--exclude=*",
-        src.rstrip("/") + "/",
-        dst.rstrip("/") + "/",
-    ]
-    subprocess.run(cmd, check=True)
-
-
-def rclone_copy_dir(src: str, dst: str, rclone_flags: Optional[list[str]] = None):
-    """Copies a directory using rclone, creating parent if needed."""
-    import subprocess
-
-    # rclone handles creating parents usually, but let's be consistent
-    # Note: dst might be a remote like 'remote:path/to/dir'
-    cmd = ["rclone", "copy"]
-    if rclone_flags:
-        cmd.extend(rclone_flags)
-    cmd.extend(["--include", "*.m4a", "--include", "*.lrc", src, dst])
-    subprocess.run(cmd, check=True)
-
-
 # Presets expressed as canonical duration strings.
 _PRESET_DURATIONS: dict[str, str] = {
     "short": "10 minutes",

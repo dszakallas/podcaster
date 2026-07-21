@@ -87,7 +87,6 @@ dockerTools.buildImage {
     pathsToLink = [
       "/bin"
       "/etc"
-      "/workspace"
     ];
   };
 

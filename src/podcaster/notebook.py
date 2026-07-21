@@ -18,15 +18,13 @@ async def upload_source(
     notebook_id: str,
     source_file: str,
     title: Optional[str] = None,
-    import_handler: str = "default",
-    importer: Optional[str] = None,
+    importer: str = "default",
 ) -> str:
     """Uploads a source file or URL and waits for processing."""
     from . import research
 
-    handler = importer or import_handler
     res = await research.import_source(
-        notebook_id, source_file, import_handler=handler, title=title
+        notebook_id, source_file, importer=importer, title=title
     )
     if "error" in res and res.get("error"):
         raise RuntimeError(
@@ -43,8 +41,7 @@ async def init_notebook(
     notebook_id: Optional[str] = None,
     podcast_dir: Optional[str] = None,
     from_source: Optional[str] = None,
-    import_handler: str = "default",
-    importer: Optional[str] = None,
+    importer: str = "default",
 ) -> dict:
     """Initialize a notebook: creates/fetches a notebook and initializes its local directory.
 
@@ -57,8 +54,6 @@ async def init_notebook(
     config = load_config()
     if not podcast_dir:
         podcast_dir = config.podcast_dir
-
-    handler = importer or import_handler
 
     if from_source:
         async with await RetryingNotebookLMClient.from_storage(
@@ -87,7 +82,7 @@ async def init_notebook(
                         created_notebook_id,
                         from_source,
                         title=title,
-                        import_handler=handler,
+                        importer=importer,
                     )
                 except Exception as e:
                     logger.error(

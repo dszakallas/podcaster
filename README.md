@@ -1,11 +1,11 @@
 # Podcaster
 
-Automation tools for generating podcasts from articles and documents with NotebookLM using `notebooklm-py`.
+Automation tools for generating podcasts from articles and documents mostly using NotebookLM and `notebooklm-py`.
 
 ## Features
 
 - **Automated Workflows**: From a single source file to a Plex-ready podcast in one command.
-- **Paywall Bypassing**: Automated scraping fallback for paywalled sites using Playwright.
+- **Paywall Bypassing**: Optional fallback for scraping blocked sites using local agents and tools (experimental).
 - **Deep Research**: Enriches the notebook with web research related to your source material.
 - **AI Cover Art**: Generates custom 1:1 album covers using Gemini.
 - **Transcription**: Generates perfectly synchronized LRC lyrics (grouped into 2-second readable segments) using Google Cloud Speech-to-Text (Chirp 2).
@@ -110,7 +110,7 @@ podcaster workflow run deep-dive-default ./article.txt \
 This workflow will automatically:
 
 1. Create a NotebookLM notebook.
-2. Upload the source file or URL (triggering Playwright scraping if blocked).
+2. Upload the source file or URL (optional scraper agent can be used).
 3. Perform web research to enrich the context based on `enrich_web` settings.
 4. Generate a custom album cover.
 5. Trigger podcast generation in your configured default languages.
@@ -139,15 +139,15 @@ podcaster transcription download
 
 #### Import Web
 
-Imports a URL, Google Drive link, or local file into a notebook using configurable import handlers (`import_handlers:` section in `podcaster.yaml`).
-Source inputs are normalized to absolute `file://` URIs for local files before matcher evaluation (`normalize_source`). Handlers evaluate regex match patterns (including negative patterns like `!https?://.*wsj\\.com/.*` for paywalled or unimportable sites).
+Imports a URL, Google Drive link, or local file into a notebook using configurable importers (`importers:` section in `podcaster.yaml`).
+Source inputs are normalized to absolute `file://` URIs for local files before matcher evaluation (`normalize_source`). Importers evaluate regex match patterns (including negative patterns like `!https?://.*wsj\\.com/.*` for paywalled or unimportable sites).
 
 ```bash
-# Standard import using default chain handler (native -> scraper)
+# Standard import using default chain importer (native -> scraper)
 podcaster import-web <notebook_id> <url>
 
-# Use a specific import handler preset
-podcaster import-web <notebook_id> <url> --import-handler scraper
+# Use a specific importer preset
+podcaster import-web <notebook_id> <url> --importer scraper
 ```
 
 #### Create and initialize a local notebook
@@ -176,20 +176,12 @@ podcaster transcription poll | \
 podcaster transcription download
 ```
 
-#### Distribute a podcast (rsync/rclone)
+#### Distribute a podcast
 
-Distributes a podcast to a remote destination using a named preset or manual destination.
-
-```bash
-podcaster dist-rsync <notebook_id> --preset backup-drive
-```
-
-#### Distribute to Plex
-
-Distributes a notebook's podcasts to a Plex library using a named preset.
+Distributes a podcast using a named distribution preset from the configuration (supporting rsync, rclone, and Plex targets). Supports passing custom flags to `rsync` or `rclone` via `--flag`.
 
 ```bash
-podcaster dist-plex <notebook_id> --preset my-media-server
+podcaster distribute <notebook_id> --preset my-media-server [--flag "--dry-run"]
 ```
 
 #### Scrape a web target (standalone)

@@ -4,7 +4,7 @@ import logging
 import mimetypes
 import os
 import time
-from typing import AsyncGenerator, Optional
+from typing import AsyncGenerator, Optional, Union
 
 from mutagen.flac import Picture
 from mutagen.id3 import (
@@ -24,6 +24,7 @@ from mutagen.mp3 import MP3
 from mutagen.mp4 import MP4, MP4Cover
 from mutagen.oggvorbis import OggVorbis
 
+from .config import PodcastTagsConfig, TaggingSpecConfig
 from .utils import load_config
 
 logger = logging.getLogger(__name__)
@@ -253,11 +254,31 @@ async def tag_artifacts(
     track_offset: int = 0,
     album: Optional[str] = None,
     created_at: Optional[str] = None,
+    tags_ref: Optional[Union[str, TaggingSpecConfig]] = None,
 ) -> AsyncGenerator[dict, None]:
     config = load_config()
-    tags_config = config.podcast_tags
-    default_album_artist = tags_config.album_artist
-    default_artists = tags_config.artists
+    if isinstance(tags_ref, str):
+        ref_obj = TaggingSpecConfig(ref=tags_ref)
+    elif isinstance(tags_ref, TaggingSpecConfig):
+        ref_obj = tags_ref
+    else:
+        ref_obj = TaggingSpecConfig(ref="default")
+
+    preset_name = ref_obj.ref or "default"
+    base_cfg = (
+        config.podcast_tags.get(preset_name)
+        or config.podcast_tags.get("default")
+        or PodcastTagsConfig()
+    )
+
+    default_album_artist = (
+        ref_obj.album_artist
+        if ref_obj.album_artist is not None
+        else base_cfg.album_artist
+    )
+    default_artists = (
+        ref_obj.artists if ref_obj.artists is not None else base_cfg.artists
+    )
 
     auto_track_count = 0
 

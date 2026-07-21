@@ -9,6 +9,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, AsyncGenerator, Callable, List, Optional, Union
 
+from .config import AppConfig, ImporterConfig, ImporterRef
 from .utils import (
     RetryingNotebookLMClient,
     get_storage_path,
@@ -42,16 +43,16 @@ def normalize_source(source: str) -> str:
     return source
 
 
-class ImportHandler(ABC):
-    """Abstract interface for all import handlers."""
+class Importer(ABC):
+    """Abstract interface for all importers."""
 
     def __init__(self, match_expressions: Optional[List[str]] = None):
         self.match_expressions = match_expressions or [".*"]
 
     def matches(self, source: str) -> bool:
-        """Evaluates whether the source string matches this handler's criteria."""
+        """Evaluates whether the source string matches this importer's criteria."""
         source = normalize_source(source)
-        return evaluate_handler_match(self.match_expressions, source)
+        return evaluate_importer_match(self.match_expressions, source)
 
     @abstractmethod
     async def execute(
@@ -65,8 +66,8 @@ class ImportHandler(ABC):
         ...
 
 
-class NativeImportHandler(ImportHandler):
-    """Native import handler utilizing NotebookLM's built-in file/URL/Drive importer."""
+class NativeImporter(Importer):
+    """Native importer utilizing NotebookLM's built-in file/URL/Drive importer."""
 
     def __init__(
         self,
@@ -86,19 +87,19 @@ class NativeImportHandler(ImportHandler):
         if not self.matches(source):
             return {
                 "source_id": None,
-                "error": f"Source '{source}' did not match native import handler criteria.",
+                "error": f"Source '{source}' did not match native importer criteria.",
             }
         try:
             src_id = await _import_native(
                 notebook_id, source, title=title, client=client
             )
-            return {"source_id": src_id, "handler": "native"}
+            return {"source_id": src_id, "importer": "native"}
         except Exception as e:
             return {"source_id": None, "error": f"[native]: {e}"}
 
 
-class ScraperImportHandler(ImportHandler):
-    """Web scraper import handler using agent-driven web scraping."""
+class ScraperImporter(Importer):
+    """Web scraper importer using agent-driven web scraping."""
 
     def __init__(
         self,
@@ -118,7 +119,7 @@ class ScraperImportHandler(ImportHandler):
         if not self.matches(source):
             return {
                 "source_id": None,
-                "error": f"Source '{source}' did not match scraper import handler criteria.",
+                "error": f"Source '{source}' did not match scraper importer criteria.",
             }
         try:
             src_id = await _import_scraper(
@@ -128,21 +129,21 @@ class ScraperImportHandler(ImportHandler):
                 title=title,
                 client=client,
             )
-            return {"source_id": src_id, "handler": "scraper"}
+            return {"source_id": src_id, "importer": "scraper"}
         except Exception as e:
             return {"source_id": None, "error": f"[scraper]: {e}"}
 
 
-class ChainImportHandler(ImportHandler):
-    """Composite import handler executing a chain of sub-handlers in priority order."""
+class ChainImporter(Importer):
+    """Composite importer executing a chain of sub-importers in priority order."""
 
     def __init__(
         self,
-        handlers: List[ImportHandler],
+        importers: Optional[List[Importer]] = None,
         match_expressions: Optional[List[str]] = None,
     ):
         super().__init__(match_expressions=match_expressions)
-        self.handlers = handlers
+        self.importers = importers or []
 
     async def execute(
         self,
@@ -154,114 +155,112 @@ class ChainImportHandler(ImportHandler):
         if not self.matches(source):
             return {
                 "source_id": None,
-                "error": f"Source '{source}' did not match chain import handler criteria.",
+                "error": f"Source '{source}' did not match chain importer criteria.",
             }
 
         errors = []
-        for idx, sub_handler in enumerate(self.handlers):
+        for idx, sub_importer in enumerate(self.importers):
             logger.debug(
-                f"Chain handler executing sub-handler {idx} ({sub_handler.__class__.__name__}) on '{source}'"
+                f"Chain importer executing sub-importer {idx} ({sub_importer.__class__.__name__}) on '{source}'"
             )
-            res = await sub_handler.execute(
+            res = await sub_importer.execute(
                 notebook_id, source, title=title, client=client
             )
             if res.get("source_id"):
                 return res
-            errors.append(res.get("error", f"Sub-handler {idx} failed"))
+            errors.append(res.get("error", f"Sub-importer {idx} failed"))
 
         chained_errors = "; ".join(errors)
         return {
             "source_id": None,
-            "error": f"All sub-handlers in chain failed for '{source}': {chained_errors}",
+            "error": f"All sub-importers in chain failed for '{source}': {chained_errors}",
         }
 
 
-def build_import_handler(
-    handler_input: Any,
-    config: Any,
+def build_importer(
+    importer_input: Union[str, ImporterRef, ImporterConfig, None] = None,
+    config: Optional[AppConfig] = None,
     visited_refs: Optional[set[str]] = None,
-) -> ImportHandler:
-    """Constructs a concrete ImportHandler (NativeImportHandler, ScraperImportHandler, or ChainImportHandler)
-    from a handler name, ImportHandlerRef, or ImportHandlerConfig.
+) -> Importer:
+    """Constructs a concrete Importer (NativeImporter, ScraperImporter, or ChainImporter)
+    from an importer name, ImporterRef, or ImporterConfig.
     """
     if visited_refs is None:
         visited_refs = set()
 
-    override_match = None
-    if isinstance(handler_input, str) or handler_input is None:
-        name = handler_input or "default"
+    importers_dict = config.importers if config else {}
+
+    importer_cfg: Optional[ImporterConfig] = None
+    override_match: Optional[List[str]] = None
+
+    if isinstance(importer_input, str) or importer_input is None:
+        name = importer_input or "default"
         if name in visited_refs:
-            raise ValueError(f"Circular reference detected in import handlers: {name}")
-        if name not in config.import_handlers:
-            raise ValueError(f"Import handler '{name}' not found in configuration.")
+            raise ValueError(f"Circular reference detected in importers: {name}")
+        if name not in importers_dict:
+            raise ValueError(f"Importer '{name}' not found in configuration.")
         visited_refs.add(name)
-        handler_cfg = config.import_handlers[name]
-    elif hasattr(handler_input, "ref") and getattr(handler_input, "ref", None):
-        ref = getattr(handler_input, "ref")
-        if ref in visited_refs:
-            raise ValueError(f"Circular reference detected in import handlers: {ref}")
-        if ref not in config.import_handlers:
-            raise ValueError(f"Import handler '{ref}' not found in configuration.")
-        visited_refs.add(ref)
-        handler_cfg = config.import_handlers[ref]
-        override_match = getattr(handler_input, "match", None)
+        importer_cfg = importers_dict[name]
+    elif isinstance(importer_input, ImporterRef):
+        if importer_input.ref:
+            ref = importer_input.ref
+            if ref in visited_refs:
+                raise ValueError(f"Circular reference detected in importers: {ref}")
+            if ref not in importers_dict:
+                raise ValueError(f"Importer '{ref}' not found in configuration.")
+            visited_refs.add(ref)
+            importer_cfg = importers_dict[ref]
+        override_match = importer_input.match
+    elif isinstance(importer_input, ImporterConfig):
+        importer_cfg = importer_input
+        override_match = importer_input.match
     else:
-        handler_cfg = handler_input
-        override_match = getattr(handler_input, "match", None)
+        raise ValueError(f"Invalid importer input type: {type(importer_input)}")
 
     match_rules = (
         override_match
         if override_match is not None
-        else (getattr(handler_cfg, "match", None) or [".*"])
+        else (importer_cfg.match if importer_cfg and importer_cfg.match else [".*"])
     )
 
-    if (
-        getattr(handler_cfg, "native", None) is not None
-        or getattr(handler_cfg, "type", None) == "native"
-    ):
-        return NativeImportHandler(
-            config=getattr(handler_cfg, "native", None),
+    if importer_cfg and importer_cfg.native:
+        return NativeImporter(
+            config=importer_cfg.native,
             match_expressions=match_rules,
         )
-    elif (
-        getattr(handler_cfg, "scraper", None) is not None
-        or getattr(handler_cfg, "type", None) == "scraper"
-    ):
-        return ScraperImportHandler(
-            config=getattr(handler_cfg, "scraper", None),
+    elif importer_cfg and importer_cfg.scraper:
+        return ScraperImporter(
+            config=importer_cfg.scraper,
             match_expressions=match_rules,
         )
-    elif (
-        getattr(handler_cfg, "chain", None) is not None
-        or getattr(handler_cfg, "type", None) == "chain"
-    ):
-        chain_cfg = getattr(handler_cfg, "chain", None)
-        sub_refs = getattr(chain_cfg, "handlers", []) if chain_cfg else []
-        sub_handlers = [
-            build_import_handler(sub_ref, config, visited_refs=set(visited_refs))
+    elif importer_cfg and importer_cfg.chain:
+        chain_cfg = importer_cfg.chain
+        sub_refs = chain_cfg.importers if chain_cfg else []
+        sub_importers = [
+            build_importer(sub_ref, config, visited_refs=set(visited_refs))
             for sub_ref in sub_refs
         ]
-        return ChainImportHandler(
-            handlers=sub_handlers,
+        return ChainImporter(
+            importers=sub_importers,
             match_expressions=match_rules,
         )
     else:
         raise ValueError(
-            f"Could not construct ImportHandler from handler configuration: {handler_input}"
+            f"Could not construct Importer from importer configuration: {importer_input}"
         )
 
 
-async def execute_import_handler(
-    handler_input: Any,
-    notebook_id: str,
-    source: str,
+async def execute_importer(
+    importer_input: Any = None,
+    notebook_id: str = "",
+    source: str = "",
     title: Optional[str] = None,
     client: Optional[RetryingNotebookLMClient] = None,
 ) -> dict:
-    """Executes an import handler on a source string using the ImportHandler interface."""
+    """Executes an importer on a source string using the Importer interface."""
     config = load_config()
-    handler = build_import_handler(handler_input, config)
-    return await handler.execute(notebook_id, source, title=title, client=client)
+    importer_obj = build_importer(importer_input, config)
+    return await importer_obj.execute(notebook_id, source, title=title, client=client)
 
 
 async def scrape_source(
@@ -318,11 +317,13 @@ async def scrape_source(
         "useful for content enrichment. Extract 3-5 keywords summarizing the article's topics, and find "
         "the publication date. Close the browser tab when finished. "
         "Finally, respond with a single, valid NDJSON object on a single line without whitespace in this exact "
-        'format: {"url":"...","title":"...","author":"...","created_at":"<date>","content":"<extracted content>","links":[...],"keywords":[...]}. '
-        "If any failure occurs, return instead: "
-        '{"error":"<error description>"}. After scraping spend up to a minute on the site, moving the mouse, scrolling, clicking on a few links, '
         "emulating what a real user would do as an anti-bot evasion measure. Make sure that the browser is closed in the end. "
-        "Do not output any markdown code blocks or additional text."
+        "IMPORTANT OUTPUT REQUIREMENTS, YOU MUST ADHERE: "
+        "On success, respond with a single, valid NDJSON object on a single line without whitespace on this exact "
+        'format: {"url":"...","title":"...","author":"...","created_at":"<date>","content":"<extracted content>","links":[...],"keywords":[...]}. '
+        "On failure respond with with a single, valid NDJSON object on a single line without whitespace on this exact "
+        'format: {"error":"<error description>"}. '
+        "Your response must be a valid NDJSON at all times, DO NOT INCLUDE ANY OTHER TEXT, MARKDOWN, ETC IN YOUR RESPONSE."
     )
 
     logger.info(f"Scraping URL via {agent_command}: {url}")
@@ -359,7 +360,7 @@ async def scrape_source(
                     break
                 line_str = line.decode().rstrip()
                 if line_str:
-                    logger.info(line_str)
+                    logger.info(f"[{os.path.basename(agent_command)}] {line_str}")
                     stderr_lines.append(line_str)
 
     stdout_bytes, _, _ = await asyncio.gather(
@@ -428,7 +429,7 @@ def extract_drive_file_id(url: str) -> Optional[str]:
     return None
 
 
-def evaluate_handler_match(match_expressions: List[str], source: str) -> bool:
+def evaluate_importer_match(match_expressions: List[str], source: str) -> bool:
     """Evaluates regex matcher expressions in order for a given source string.
 
     A leading '!' removes an existing match if the pattern matches.
@@ -446,6 +447,9 @@ def evaluate_handler_match(match_expressions: List[str], source: str) -> bool:
             if re.search(pattern, source):
                 matched = True
     return matched
+
+
+evaluate_handler_match = evaluate_importer_match
 
 
 async def _import_native(
@@ -526,7 +530,7 @@ async def _import_scraper(
 
     if scraper_config:
         scraper_def = None
-        ref = getattr(scraper_config, "ref", None)
+        ref = scraper_config.ref
         if ref and ref in config.scrapers:
             scraper_def = config.scrapers[ref]
         elif ref and ref in config.agents:
@@ -546,16 +550,16 @@ async def _import_scraper(
                     command = ag.command
                     args = ag.args or []
 
-        if getattr(scraper_config, "tool", None):
+        if scraper_config.tool:
             tool = scraper_config.tool
 
-        ag_inline = getattr(scraper_config, "agent", None)
+        ag_inline = scraper_config.agent
         if ag_inline:
-            if getattr(ag_inline, "ref", None) and ag_inline.ref in config.agents:
+            if ag_inline.ref and ag_inline.ref in config.agents:
                 agent_def = config.agents[ag_inline.ref]
                 command = agent_def.command
                 args = agent_def.args
-            elif getattr(ag_inline, "command", None):
+            elif ag_inline.command:
                 command = ag_inline.command
                 args = ag_inline.args or []
 
@@ -592,26 +596,24 @@ async def _import_scraper(
 async def import_source(
     notebook_id: str,
     source: str,
-    import_handler: Optional[Union[str, Any]] = "default",
+    importer: Optional[Union[str, Any]] = "default",
     title: Optional[str] = None,
     client: Optional[RetryingNotebookLMClient] = None,
-    importer: Optional[Union[str, Any]] = None,
 ) -> dict:
-    """Imports a source into NotebookLM using configured import handler (native, scraper, or chain)."""
-    target_handler = importer if importer is not None else import_handler
+    """Imports a source into NotebookLM using configured importer (native, scraper, or chain)."""
     source = normalize_source(source)
 
     if client is not None:
-        return await execute_import_handler(
-            target_handler, notebook_id, source, title=title, client=client
+        return await execute_importer(
+            importer, notebook_id, source, title=title, client=client
         )
 
     storage_path = get_storage_path()
     async with await RetryingNotebookLMClient.from_storage(
         storage_path, timeout=120.0
     ) as c:
-        return await execute_import_handler(
-            target_handler, notebook_id, source, title=title, client=c
+        return await execute_importer(
+            importer, notebook_id, source, title=title, client=c
         )
 
 
@@ -624,12 +626,10 @@ async def import_web_source(
     tool: Optional[str] = None,
     command: Optional[str] = None,
     args: Optional[List[str]] = None,
-    import_handler: str = "default",
-    importer: Optional[str] = None,
+    importer: str = "default",
 ) -> dict:
     """Delegates to import_source for generalized importing with fallback."""
-    handler = importer or import_handler
-    return await import_source(notebook_id, url, import_handler=handler, title=title)
+    return await import_source(notebook_id, url, importer=importer, title=title)
 
 
 async def create_research_job(
@@ -799,10 +799,17 @@ async def poll_research_jobs(
                             try:
                                 sources_list = await client.sources.list(notebook_id)
                                 for existing_src in sources_list or []:
-                                    src_u = getattr(
-                                        existing_src, "url", None
-                                    ) or getattr(existing_src, "title", "")
-                                    src_status = getattr(existing_src, "status", None)
+                                    src_u = (
+                                        existing_src.url
+                                        if hasattr(existing_src, "url")
+                                        and existing_src.url
+                                        else existing_src.title
+                                    )
+                                    src_status = (
+                                        existing_src.status
+                                        if hasattr(existing_src, "status")
+                                        else None
+                                    )
                                     if src_u == src_url or src_status == "error":
                                         logger.info(
                                             f"Removing failed/errored source from NotebookLM: {existing_src.id}"

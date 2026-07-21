@@ -4,7 +4,7 @@ import sys
 
 import click
 
-from . import cover, notebook, plex, research, tagging, transcription
+from . import cover, notebook, research, tagging, transcription
 from .audio_gen import core as audio_gen_core
 from .utils import setup_logging
 
@@ -408,22 +408,20 @@ def list_podcasts(podcast_dir, verbose):
 @click.argument("notebook_id")
 @click.argument("url")
 @click.option(
-    "--import-handler",
     "--importer",
-    "import_handler",
     default="default",
-    help="Import handler to use for URL import",
+    help="Importer to use for URL import",
 )
 @click.option("--title", help="Title for the imported source")
 @click.option("--verbose", "-v", is_flag=True, help="Enable verbose logging")
-def import_web(notebook_id, url, import_handler, title, verbose):
+def import_web(notebook_id, url, importer, title, verbose):
     """Import a web URL as a source to a notebook."""
     setup_logging(verbose)
 
     async def run():
         try:
             res = await research.import_source(
-                notebook_id, url, import_handler=import_handler, title=title
+                notebook_id, url, importer=importer, title=title
             )
 
             if "error" in res and res.get("error"):
@@ -446,14 +444,12 @@ def import_web(notebook_id, url, import_handler, title, verbose):
 @click.argument("url_or_id")
 @click.option("--title", help="Title for the imported Drive document")
 @click.option(
-    "--import-handler",
     "--importer",
-    "import_handler",
     default="default",
-    help="Import handler to use",
+    help="Importer to use",
 )
 @click.option("--verbose", "-v", is_flag=True, help="Enable verbose logging")
-def import_drive(notebook_id, url_or_id, title, import_handler, verbose):
+def import_drive(notebook_id, url_or_id, title, importer, verbose):
     """Import a Google Drive document URL or ID as a source to a notebook."""
     setup_logging(verbose)
 
@@ -465,7 +461,7 @@ def import_drive(notebook_id, url_or_id, title, import_handler, verbose):
                 url = url_or_id
 
             res = await research.import_source(
-                notebook_id, url, import_handler=import_handler, title=title
+                notebook_id, url, importer=importer, title=title
             )
 
             if "error" in res and res.get("error"):
@@ -580,204 +576,60 @@ def research_poll(max_imports, arg_json, ignore_errors, verbose):
     asyncio.run(run())
 
 
-@cli.command(name="dist-rsync")
+@cli.command(name="distribute")
 @click.argument("notebook_id")
-@click.argument("destination", required=False)
 @click.option(
-    "--method",
-    type=click.Choice(["rsync", "rclone"]),
-    help="Sync method (default: rsync)",
+    "--preset",
+    default="default",
+    show_default=True,
+    help="Named distribution preset from config",
 )
-@click.option("--preset", help="Named rsync preset from config")
 @click.option(
     "--podcast-dir",
     "-p",
     help="Base directory where podcasts are stored (default from config or out)",
 )
 @click.option(
-    "--rclone-flag",
+    "--flag",
+    "flag",
     multiple=True,
-    help="Additional flags to pass to rclone (can be specified multiple times)",
+    help="Additional flags to pass to rsync/rclone (can be specified multiple times)",
 )
 @click.option("--verbose", "-v", is_flag=True, help="Enable verbose logging")
-def dist_rsync(
-    notebook_id, destination, method, preset, podcast_dir, rclone_flag, verbose
-):
-    """Distribute a notebook's podcasts to a remote directory (rsync/rclone)."""
-    setup_logging(verbose)
-
-    async def run():
-        try:
-            from .utils import load_config
-
-            config = load_config()
-
-            final_dest = destination
-            final_method = method or "rsync"
-            final_rclone_flags = list(rclone_flag) if rclone_flag else None
-
-            if preset:
-                ref_config = config.rsync.get(preset)
-                if not ref_config:
-                    click.echo(
-                        json.dumps(
-                            {"error": f"Rsync preset '{preset}' not found in config."}
-                        ),
-                        err=True,
-                    )
-                    sys.exit(1)
-                final_dest = ref_config.destination
-                final_method = method or ref_config.method
-                if not final_rclone_flags:
-                    final_rclone_flags = ref_config.rclone_flags
-
-            if not final_dest:
-                click.echo(
-                    json.dumps(
-                        {
-                            "error": "Destination must be provided as an argument or via --preset."
-                        }
-                    ),
-                    err=True,
-                )
-                sys.exit(1)
-
-            res = await plex.sync_podcast(
-                notebook_id,
-                final_dest,
-                final_method,
-                podcast_dir,
-                verbose,
-                rclone_flags=final_rclone_flags,
-            )
-            click.echo(json.dumps(res))
-        except Exception as e:
-            import logging
-
-            logging.getLogger(__name__).debug("Error occurred", exc_info=True)
-            click.echo(json.dumps({"error": str(e)}), err=True)
-            sys.exit(1)
-
-    asyncio.run(run())
-
-
-@cli.command(name="dist-plex")
-@click.argument("notebook_id")
-@click.argument("plex_section_id", type=int, required=False)
-@click.option("--preset", help="Named plex preset from config")
-@click.option(
-    "--podcast-dir",
-    "-p",
-    help="Base directory where podcasts are stored (default from config or out)",
-)
-@click.option(
-    "--server-url",
-    envvar="PLEX_SERVER_URL",
-    help="Plex Server URL (e.g. http://localhost:32400)",
-)
-@click.option("--token", envvar="PLEX_TOKEN", help="Plex Authentication Token")
-@click.option(
-    "--server-library-path",
-    envvar="PLEX_SERVER_LIBRARY_PATH",
-    help="Remote library path on the Plex server",
-)
-@click.option(
-    "--rsync-destination",
-    help="Optional rsync/rclone destination to sync before triggering Plex (e.g. user@host:/path)",
-)
-@click.option(
-    "--method",
-    type=click.Choice(["rsync", "rclone"]),
-    help="Sync method (default: rsync)",
-)
-@click.option(
-    "--rclone-flag",
-    multiple=True,
-    help="Additional flags to pass to rclone (can be specified multiple times)",
-)
-@click.option("--verbose", "-v", is_flag=True, help="Enable verbose logging")
-def dist_plex(
+def distribute(
     notebook_id,
-    plex_section_id,
     preset,
     podcast_dir,
-    server_url,
-    token,
-    server_library_path,
-    rsync_destination,
-    method,
-    rclone_flag,
+    flag,
     verbose,
 ):
-    """Distribute a notebook's podcasts to a Plex library."""
+    """Distribute a notebook's podcasts using a named distribution preset."""
     setup_logging(verbose)
 
     async def run():
         try:
+            from .distribution import build_distribution
             from .utils import load_config
 
             config = load_config()
 
-            final_section_id = plex_section_id
-            final_server_path = server_library_path
-            final_rsync_dest = rsync_destination
-            final_method = method or "rsync"
-            final_rclone_flags = list(rclone_flag) if rclone_flag else None
-
-            if preset:
-                ref_config = config.plex.get(preset)
-                if not ref_config:
-                    click.echo(
-                        json.dumps(
-                            {"error": f"Plex preset '{preset}' not found in config."}
-                        ),
-                        err=True,
-                    )
-                    sys.exit(1)
-                final_section_id = plex_section_id or ref_config.section_id
-                final_server_path = (
-                    server_library_path or ref_config.server_library_path
-                )
-                if ref_config.rsync and ref_config.rsync.enabled:
-                    if ref_config.rsync.ref:
-                        rsync_ref = config.rsync.get(ref_config.rsync.ref)
-                        if rsync_ref:
-                            final_rsync_dest = (
-                                rsync_destination or rsync_ref.destination
-                            )
-                            final_method = method or rsync_ref.method
-                            if not final_rclone_flags:
-                                final_rclone_flags = rsync_ref.rclone_flags
-                    else:
-                        final_rsync_dest = (
-                            rsync_destination or ref_config.rsync.destination
-                        )
-                        final_method = method or ref_config.rsync.method or "rsync"
-                        if not final_rclone_flags:
-                            final_rclone_flags = ref_config.rsync.rclone_flags
-
-            if final_section_id is None:
+            if preset not in config.distributions:
                 click.echo(
                     json.dumps(
                         {
-                            "error": "Plex section_id must be provided as an argument or via --preset."
+                            "error": f"Distribution preset '{preset}' not found in configuration."
                         }
                     ),
                     err=True,
                 )
                 sys.exit(1)
 
-            res = await plex.sync_to_plex(
-                notebook_id,
-                final_section_id,
-                podcast_dir,
-                server_url,
-                token,
-                final_server_path,
-                final_rsync_dest,
-                final_method,
-                verbose,
-                rclone_flags=final_rclone_flags,
+            dist_obj = build_distribution(preset, config)
+            if flag and hasattr(dist_obj, "flags") and isinstance(dist_obj.flags, list):
+                dist_obj.flags.extend(flag)
+
+            res = await dist_obj.distribute(
+                notebook_id, podcast_dir=podcast_dir, verbose=verbose
             )
             click.echo(json.dumps(res))
         except Exception as e:

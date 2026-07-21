@@ -468,16 +468,15 @@ def generate_lrc(
 
             for word in alt.words:
                 # Handle start_offset
-                start_offset = getattr(word, "start_offset", None)
+                start_offset = (
+                    word.start_offset if hasattr(word, "start_offset") else None
+                )
                 if start_offset is None:
                     seconds = 0.0
                 elif hasattr(start_offset, "total_seconds"):
                     seconds = start_offset.total_seconds()
                 else:
-                    seconds = (
-                        getattr(start_offset, "seconds", 0)
-                        + getattr(start_offset, "nanos", 0) / 1e9
-                    )
+                    seconds = start_offset.seconds + start_offset.nanos / 1e9
 
                 if curr_start is None:
                     curr_start = seconds

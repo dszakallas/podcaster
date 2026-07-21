@@ -1,7 +1,6 @@
 from typing import Any, Dict, List, Literal, Optional, Union
 
 from pydantic import (
-    AliasChoices,
     BaseModel,
     ConfigDict,
     Field,
@@ -29,7 +28,7 @@ class EnrichWebSpecConfig(BaseModel):
     ignore_errors: bool = False
 
 
-class NativeHandlerConfig(BaseModel):
+class NativeImporterConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
@@ -47,35 +46,35 @@ class ScraperRef(BaseModel):
     agent: Optional[ScraperAgentConfig] = None
 
 
-class ImportHandlerItemConfig(BaseModel):
+class ImporterItemConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     ref: Optional[str] = None
     match: Optional[List[str]] = None
-    native: Optional[NativeHandlerConfig] = None
+    native: Optional[NativeImporterConfig] = None
     scraper: Optional[ScraperRef] = None
-    chain: Optional["ChainHandlerConfig"] = None
+    chain: Optional["ChainImporterConfig"] = None
 
 
-class ChainHandlerConfig(BaseModel):
+class ChainImporterConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    handlers: List["ImportHandlerRef"] = Field(default_factory=list)
+    importers: List["ImporterRef"] = Field(default_factory=list)
 
 
-class ImportHandlerConfig(BaseModel):
+class ImporterConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     match: List[str] = Field(default_factory=lambda: [".*"])
-    native: Optional[NativeHandlerConfig] = None
+    native: Optional[NativeImporterConfig] = None
     scraper: Optional[ScraperRef] = None
-    chain: Optional[ChainHandlerConfig] = None
+    chain: Optional[ChainImporterConfig] = None
 
 
-class ImportHandlerRef(BaseModel):
+class ImporterRef(BaseModel):
     model_config = ConfigDict(extra="forbid")
     ref: Optional[str] = None
     match: Optional[List[str]] = None
-    native: Optional[NativeHandlerConfig] = None
+    native: Optional[NativeImporterConfig] = None
     scraper: Optional[ScraperRef] = None
-    chain: Optional[ChainHandlerConfig] = None
+    chain: Optional[ChainImporterConfig] = None
 
     @model_validator(mode="before")
     @classmethod
@@ -85,15 +84,15 @@ class ImportHandlerRef(BaseModel):
         return data
 
 
-ImportHandlerItemConfig.model_rebuild()
-ChainHandlerConfig.model_rebuild()
+ImporterItemConfig.model_rebuild()
+ChainImporterConfig.model_rebuild()
 
 
 class EnrichWebConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     enable: bool = True
     retry_count: int = 0
-    fallback_mechanism: Union[str, ImportHandlerRef] = "ignore"
+    fallback_mechanism: Union[str, ImporterRef] = "ignore"
     spec: EnrichWebSpecConfig = Field(default_factory=EnrichWebSpecConfig)
 
 
@@ -125,42 +124,93 @@ class TranscribeConfig(BaseModel):
     )
 
 
-class RsyncTargetConfig(BaseModel):
+class RsyncDistributionConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     method: Literal["rsync", "rclone"] = "rsync"
     destination: str
-    rclone_flags: List[str] = Field(default_factory=list)
+    flags: List[str] = Field(default_factory=list)
+
+
+class PlexRsyncSpecConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    ref: Optional[str] = None
+    method: Optional[Literal["rsync", "rclone"]] = None
+    destination: Optional[str] = None
+    flags: Optional[List[str]] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _parse_string(cls, data: Any) -> Any:
+        if isinstance(data, str):
+            return {"ref": data}
+        return data
 
 
 class PlexRsyncConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    enabled: bool = True
-    ref: Optional[str] = None
-    # Optional inline config if ref is not used
-    method: Optional[Literal["rsync", "rclone"]] = None
-    destination: Optional[str] = None
-    rclone_flags: Optional[List[str]] = None
+    enable: bool = True
+    spec: Optional[PlexRsyncSpecConfig] = None
 
 
-class PlexTargetConfig(BaseModel):
+class PlexDistributionConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    rsync: Optional[PlexRsyncConfig] = None
     section_id: int
     server_library_path: str
     server_url: Optional[str] = None
     token: Optional[str] = None
+    rsync: Optional[PlexRsyncConfig] = None
 
 
-class DistributionTarget(BaseModel):
+class DistributionConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    type: Literal["rsync", "plex"]
+    rsync: Optional[RsyncDistributionConfig] = None
+    plex: Optional[PlexDistributionConfig] = None
+
+
+class RsyncDistributionRef(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     ref: Optional[str] = None
-    # Optional inline configurations
     method: Optional[Literal["rsync", "rclone"]] = None
     destination: Optional[str] = None
+    flags: Optional[List[str]] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _parse_string(cls, data: Any) -> Any:
+        if isinstance(data, str):
+            return {"ref": data}
+        return data
+
+
+class PlexDistributionRef(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    ref: Optional[str] = None
     section_id: Optional[int] = None
     server_library_path: Optional[str] = None
-    rclone_flags: Optional[List[str]] = None
+    server_url: Optional[str] = None
+    token: Optional[str] = None
+    rsync: Optional[PlexRsyncConfig] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _parse_string(cls, data: Any) -> Any:
+        if isinstance(data, str):
+            return {"ref": data}
+        return data
+
+
+class DistributionRef(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    ref: Optional[str] = None
+    rsync: Optional[Union[RsyncDistributionRef, str]] = None
+    plex: Optional[Union[PlexDistributionRef, str]] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _parse_string(cls, data: Any) -> Any:
+        if isinstance(data, str):
+            return {"ref": data}
+        return data
 
 
 class PodcastGeneratorRef(BaseModel):
@@ -171,18 +221,40 @@ class PodcastGeneratorRef(BaseModel):
     length: Optional[Literal["short", "default", "long", "auto"]] = None
 
 
+class TaggingSpecConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    ref: Optional[str] = None
+    album_artist: Optional[str] = None
+    artists: Optional[List[str]] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _parse_string(cls, data: Any) -> Any:
+        if isinstance(data, str):
+            return {"ref": data}
+        return data
+
+
+class TaggingConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    enable: bool = True
+    spec: Optional[TaggingSpecConfig] = Field(
+        default_factory=lambda: TaggingSpecConfig(ref="default")
+    )
+
+
 class DeepDiveArticleConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
     type: Literal["deep_dive_article"] = "deep_dive_article"
     podcast_generator: PodcastGeneratorRef = Field(default_factory=PodcastGeneratorRef)
-    import_handler: ImportHandlerRef = Field(
-        default_factory=lambda: ImportHandlerRef(ref="default"),
-        validation_alias=AliasChoices("import_handler", "importer"),
+    importer: ImporterRef = Field(
+        default_factory=lambda: ImporterRef(ref="default"),
     )
     enrich_web: EnrichWebConfig = Field(default_factory=EnrichWebConfig)
     generate_cover: GenerateCoverConfig = Field(default_factory=GenerateCoverConfig)
     transcribe: TranscribeConfig = Field(default_factory=TranscribeConfig)
-    distribute: List[DistributionTarget] = Field(default_factory=list)
+    tagging: TaggingConfig = Field(default_factory=TaggingConfig)
+    distribute: List[DistributionRef] = Field(default_factory=list)
 
 
 class WorkflowConfig(RootModel):
@@ -227,17 +299,17 @@ class AppConfig(BaseModel):
     podcast_transcribers: Dict[str, PodcastTranscriptionConfig] = Field(
         default_factory=lambda: {"default": PodcastTranscriptionConfig()}
     )
-    import_handlers: Dict[str, ImportHandlerConfig] = Field(
+    importers: Dict[str, ImporterConfig] = Field(
         default_factory=lambda: {
-            "default": ImportHandlerConfig(
-                chain=ChainHandlerConfig(
-                    handlers=[
-                        ImportHandlerRef(ref="native"),
-                        ImportHandlerRef(ref="scraper"),
+            "default": ImporterConfig(
+                chain=ChainImporterConfig(
+                    importers=[
+                        ImporterRef(ref="native"),
+                        ImporterRef(ref="scraper"),
                     ]
                 )
             ),
-            "native": ImportHandlerConfig(
+            "native": ImporterConfig(
                 match=[
                     ".*",
                     "!https?://.*wsj\\.com/.*",
@@ -248,16 +320,19 @@ class AppConfig(BaseModel):
                     "!https?://.*msn\\.com/.*",
                     "!https?://.*archive\\.(ph|is)/.*",
                 ],
-                native=NativeHandlerConfig(),
+                native=NativeImporterConfig(),
             ),
-            "scraper": ImportHandlerConfig(
+            "scraper": ImporterConfig(
                 match=["https?://.*", "!file:.*", "!gdrive:.*"],
                 scraper=ScraperRef(ref="default"),
             ),
-        }
+        },
     )
-    podcast_tags: PodcastTagsConfig = Field(default_factory=PodcastTagsConfig)
+    podcast_tags: Dict[str, PodcastTagsConfig] = Field(
+        default_factory=lambda: {"default": PodcastTagsConfig()}
+    )
     workflow: WorkflowConfig = Field(default_factory=lambda: WorkflowConfig(root={}))
-    rsync: Dict[str, RsyncTargetConfig] = Field(default_factory=dict)
-    plex: Dict[str, PlexTargetConfig] = Field(default_factory=dict)
+    distributions: Dict[str, DistributionConfig] = Field(
+        default_factory=dict,
+    )
     gcp: GCPConfig = Field(default_factory=GCPConfig)

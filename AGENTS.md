@@ -17,10 +17,11 @@ This repository uses Nix `devenv` for managing its development environment and d
 
 ## Workflows and Distribution
 
-The project uses a **preset-based** configuration system for workflows and distribution.
+The project uses a **preset-based** configuration system for workflows, distribution, importers, and ID3 tagging.
 
-- **Workflow Presets**: Defined under `workflow:` in `podcaster.yaml`. Run them using `uv run podcaster workflow run <preset_name>`. Resume them using `uv run podcaster workflow resume <notebook_id>`.
-- **Distribution Presets**: Defined under top-level `rsync:` and `plex:` keys. Use them in workflows via the `distribute:` array or manually via `uv run podcaster dist-plex <id> --preset <name>`.
+- **Workflow Presets**: Defined under `workflow:` in `podcaster.yaml`. Run them using `uv run podcaster workflow run <preset_name>`. Resume them using `uv run podcaster workflow resume <notebook_id>`. Workflow steps include `importer`, `podcast_generator`, `enrich_web`, `generate_cover`, `transcribe`, `tagging` (with `enable: bool` and `spec:` holding a `ref` or inline tags configuration), and `distribute`.
+- **Distribution Presets**: Defined under top-level `distributions:` key (containing `rsync` or `plex` distribution configurations). `rsync` distributions support `method` (`rsync` or `rclone`), `destination`, and `flags`. `plex` distributions support optional `rsync` pre-sync via `rsync: { enable: true, spec: { ref: ... } }`. Use distribution presets in workflows via the `distribute:` array or manually via `uv run podcaster distribute <id> [--preset <name>] [--flag ...]`.
+- **ID3 Tagging Presets**: Defined under top-level `podcast_tags:` key as a preset dictionary mapping preset names (e.g. `default`) to `album_artist` and `artists`.
 
 ## Notebook Management
 
@@ -30,14 +31,14 @@ The project uses a **preset-based** configuration system for workflows and distr
 
 ## Article Importing & Web Scraping
 
-- **Import Handlers Architecture**: Ingestion is managed via composable import handlers implementing the `ImportHandler` interface (`NativeImportHandler`, `ScraperImportHandler`, `ChainImportHandler`):
+- **Importers Architecture**: Ingestion is managed via composable importers implementing the `Importer` interface (`NativeImporter`, `ScraperImporter`, `ChainImporter`):
   - `native`: Direct NotebookLM upload for URLs, Google Drive links, and local files.
   - `scraper`: Agent-driven web scraper configured via top-level `scrapers:` section.
-  - `chain`: Composite handler executing a list of sub-handlers (`handlers`) in priority order with fallback on failure.
+  - `chain`: Composite importer executing a list of sub-importers (`importers`) in priority order with fallback on failure.
 - **Source Normalization**: Input sources (local paths, `file://` URLs, web URLs, Drive links) are normalized into absolute `file://` URIs before match evaluation (`normalize_source`).
-- **Match Expressions**: Handlers use regex match rules (including negative patterns starting with `!` like `!https?://.*wsj\\.com/.*`) to determine applicability. Handlers without a `match` block implicitly default to `[".*"]`.
+- **Match Expressions**: Importers use regex match rules (including negative patterns starting with `!` like `!https?://.*wsj\\.com/.*`) to determine applicability. Importers without a `match` block implicitly default to `[".*"]`.
 - **Paywall Detection**: Scraper agent prompts detect paywalls (missing text, mid-article truncation, or login/register overlays) and bail out with a structured JSON error payload.
-- **Research Enrichment Fallback**: Web research jobs use `fallback_mechanism` (an import handler name, `ImportHandlerRef`, or `"ignore"`). Errored remote sources are automatically deleted when `"ignore"` is used.
+- **Research Enrichment Fallback**: Web research jobs use `fallback_mechanism` (an importer name, `ImporterRef`, or `"ignore"`). Errored remote sources are automatically deleted when `"ignore"` is used.
 
 ## Code Quality Checks
 

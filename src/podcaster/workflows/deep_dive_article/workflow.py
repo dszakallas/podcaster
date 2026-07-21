@@ -5,9 +5,10 @@ import os
 from pathlib import Path
 from typing import Any, Awaitable, Optional, Union
 
-from podcaster import cover, plex, research, tagging, transcription
+from podcaster import cover, research, tagging, transcription
 from podcaster import notebook as notebook_mod
 from podcaster.audio_gen import core as audio_gen_core
+from podcaster.config import DistributionRef, TaggingConfig
 from podcaster.utils import (
     DEFAULT_PODCAST_DIR,
     find_notebook_dir,
@@ -163,74 +164,12 @@ def _build_processed_file(notebook_id: str, t_state: TaskState) -> dict:
     }
 
 
-def _distribution_target_params(target) -> dict:
+def _distribution_target_params(target: DistributionRef) -> dict:
     return {
-        "type": target.type,
         "ref": target.ref,
-        "destination": getattr(target, "destination", None),
+        "rsync": target.rsync,
+        "plex": target.plex,
     }
-
-
-def _resolve_rsync_distribution_target(
-    target, config
-) -> tuple[str, Optional[str], Optional[list[str]]]:
-    dest = target.destination
-    method = target.method
-    rclone_flags = target.rclone_flags
-    if target.ref:
-        ref_config = config.rsync.get(target.ref)
-        if not ref_config:
-            raise ValueError(
-                f"Rsync reference '{target.ref}' not found in top-level config."
-            )
-        dest = ref_config.destination
-        method = ref_config.method
-        rclone_flags = ref_config.rclone_flags
-
-    if not dest:
-        raise ValueError("Rsync distribution target missing destination.")
-
-    return dest, method, rclone_flags
-
-
-def _resolve_plex_distribution_target(
-    target, config
-) -> tuple[str, Optional[str], Optional[str], str, Optional[list[str]]]:
-    section_id = target.section_id
-    server_library_path = target.server_library_path
-    rsync_dest = target.destination
-    rsync_method = target.method or "rsync"
-    rclone_flags = target.rclone_flags
-
-    if target.ref:
-        ref_config = config.plex.get(target.ref)
-        if not ref_config:
-            raise ValueError(
-                f"Plex reference '{target.ref}' not found in top-level config."
-            )
-        section_id = ref_config.section_id
-        server_library_path = ref_config.server_library_path
-        if ref_config.rsync and ref_config.rsync.enabled:
-            if ref_config.rsync.ref:
-                rsync_ref = config.rsync.get(ref_config.rsync.ref)
-                if not rsync_ref:
-                    raise ValueError(
-                        f"Rsync reference '{ref_config.rsync.ref}' (from Plex '{target.ref}') not found."
-                    )
-                rsync_dest = rsync_ref.destination
-                rsync_method = rsync_ref.method
-                if not rclone_flags:
-                    rclone_flags = rsync_ref.rclone_flags
-            else:
-                rsync_dest = ref_config.rsync.destination
-                rsync_method = ref_config.rsync.method or "rsync"
-                if not rclone_flags:
-                    rclone_flags = ref_config.rsync.rclone_flags
-
-    if section_id is None:
-        raise ValueError("Plex distribution target missing section_id.")
-
-    return section_id, server_library_path, rsync_dest, rsync_method, rclone_flags
 
 
 async def _run_distribution_target(
@@ -240,6 +179,8 @@ async def _run_distribution_target(
     podcast_dir: Optional[str],
     verbose: bool,
 ):
+    from ...distribution import build_distribution
+
     target_params = _distribution_target_params(target)
     try:
         async with log_task(
@@ -248,36 +189,12 @@ async def _run_distribution_target(
             notebook_id=notebook_id,
             target=target_params,
         ):
-            if target.type == "rsync":
-                dest, method, rclone_flags = _resolve_rsync_distribution_target(
-                    target, config
-                )
-                await plex.sync_podcast(
-                    notebook_id=notebook_id,
-                    destination=dest,
-                    method=method,
-                    podcast_dir=podcast_dir,
-                    verbose=verbose,
-                    rclone_flags=rclone_flags,
-                )
-            elif target.type == "plex":
-                (
-                    section_id,
-                    server_library_path,
-                    rsync_dest,
-                    rsync_method,
-                    rclone_flags,
-                ) = _resolve_plex_distribution_target(target, config)
-                await plex.sync_to_plex(
-                    notebook_id=notebook_id,
-                    plex_section_id=section_id,
-                    podcast_dir=podcast_dir,
-                    server_library_path=server_library_path,
-                    rsync_destination=rsync_dest,
-                    sync_method=rsync_method,
-                    verbose=verbose,
-                    rclone_flags=rclone_flags,
-                )
+            dist_obj = build_distribution(target, config)
+            await dist_obj.distribute(
+                notebook_id=notebook_id,
+                podcast_dir=podcast_dir,
+                verbose=verbose,
+            )
     except Exception:
         pass
 
@@ -287,13 +204,11 @@ async def upload_and_wait_source(
     notebook_id: str,
     source_file: str,
     title: Optional[str] = None,
-    import_handler: Any = "default",
-    importer: Optional[Any] = None,
+    importer: Any = "default",
 ) -> str:
     """Uploads a source file or URL and waits for processing."""
-    handler = importer or import_handler
     return await notebook_mod.upload_source(
-        notebook_id, source_file, title=title, import_handler=handler
+        notebook_id, source_file, title=title, importer=importer
     )
 
 
@@ -310,6 +225,7 @@ async def generate_download_and_tag_podcast(
     transcription_languages: Optional[list[str]] = None,
     transcribe_retry_count: int = 0,
     transcriber_key: str = "default",
+    tagging_config: Optional[TaggingConfig] = None,
     verbose: bool = False,
 ):
     """Polls, downloads, and tags a specific generation task once complete."""
@@ -412,7 +328,10 @@ async def generate_download_and_tag_podcast(
 
     # Step 3: Tag
     tagged = None
-    if _should_skip_tagging(t_state):
+    if not tagging_config or not tagging_config.enable:
+        logger.debug("Tagging is disabled in workflow config, skipping.")
+        tagged = downloaded
+    elif _should_skip_tagging(t_state):
         logger.debug("Skipping tagging for already tagged file")
         tagged = downloaded
     else:
@@ -435,6 +354,7 @@ async def generate_download_and_tag_podcast(
                 cover_path=resolved_cover_image,
                 album=state.notebook_title if state else None,
                 created_at=date_val,
+                tags_ref=tagging_config.spec if tagging_config else None,
             ):
                 tagged = tag
                 break
@@ -676,7 +596,7 @@ async def run(
             title=title,
             podcast_dir=podcast_dir,
             from_source=source_file,
-            import_handler=wf_config.import_handler,
+            importer=wf_config.importer,
         )
         notebook_id = notebook_info["notebook_id"]
         derived_title = notebook_info["derived_title"]
@@ -938,6 +858,7 @@ async def run(
                 transcription_languages=transcription_langs,
                 transcribe_retry_count=transcribe_retry_count,
                 transcriber_key=transcriber_name,
+                tagging_config=wf_config.tagging,
                 verbose=verbose,
             )
             for task in tasks

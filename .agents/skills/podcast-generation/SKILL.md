@@ -16,7 +16,7 @@ The most efficient way to generate a podcast is using the **End-to-End (E2E) pip
    - **Command**: `podcaster workflow run "${preset_name}" "${source_path_or_url}" --title "${title}"` (The `--title` parameter is optional; if not set, the title is derived from the notebook/source.)
    - **Preset Selection**: Use a named preset from `podcaster.yaml` (e.g., `default`, `deep-dive-default`).
    - **Bypassing Blocks & Paywalls**: Ingestion automatically handles paywalled or unimportable sites (matching `unimportables` regexes) via agent-based scraping using Playwright MCP. If an article is paywalled (missing text, mid-article truncation, or login/register wall overlays), the agent bails out returning a structured JSON error.
-   - **Import Handlers**: Ingestion behavior can be set to `default`, `scrape` (forced agent scraping), or `ignore`. Failed research enrichment sources trigger the configured `fallback_mechanism` (`scrape` or `ignore`).
+   - **Importers**: Ingestion behavior can be set to `default`, `scrape` (forced agent scraping), or `ignore`. Failed research enrichment sources trigger the configured `fallback_mechanism` (`scrape` or `ignore`).
 
 ## Granular Tool Usage & Manual Workflows
 
@@ -54,20 +54,12 @@ Then, inject the artifact details into the download pipeline via `--arg-json`. N
 podcaster podcast download --arg-json '{"artifact_id": "YOUR_ARTIFACT_ID", "notebook_id": "YOUR_NOTEBOOK_ID", "type_id": "audio", "title": "The Title", "status": "completed", "generate-podcast": {"notebook_id": "YOUR_NOTEBOOK_ID"}}' | podcaster tag-podcast --cover "./path/to/cover.png"
 ```
 
-### Manual Plex Distribution
+### Manual Distribution
 
-To distribute a specific notebook's generated podcasts to your Plex library using a named preset:
-
-```bash
-podcaster dist-plex "${notebook_id}" --preset my-media-server
-```
-
-### Manual Remote Distribution
-
-To distribute a podcast to a remote destination using a named preset:
+To distribute a podcast using a named distribution preset (rsync, rclone, or Plex target):
 
 ```bash
-podcaster dist-rsync "${notebook_id}" --preset backup-drive
+podcaster distribute "${notebook_id}" --preset my-media-server [--flag "--dry-run"]
 ```
 
 ### Manual Notebook Initialization
@@ -101,6 +93,6 @@ To manually import a URL and trigger an AI research deep-dive:
 
 ## Configuration & Standards
 
-- **Settings**: Primary defaults (languages, length, GCP location, unimportable regexes) are managed in `podcaster.yaml`. Workflow options use a nested schema (e.g., `workflow.deep_dive_article.generate_cover.enable`, `workflow.deep_dive_article.transcribe.enable`, `workflow.deep_dive_article.rsync.destination`).
+- **Settings**: Primary defaults (languages, length, GCP location, unimportable regexes) are managed in `podcaster.yaml`. Workflow options use a nested schema (e.g., `workflow.deep_dive_article.generate_cover.enable`, `workflow.deep_dive_article.transcribe.enable`, `workflow.deep_dive_article.tagging.enable`, `workflow.deep_dive_article.distribute`). Top-level preset definitions are configured under `scrapers:`, `podcast_generators:`, `podcast_transcribers:`, `importers:`, `podcast_tags:`, and `distributions:`.
 - **Infrastructure**: Ensure `PLEX_SERVER_URL` and `PLEX_TOKEN` are in the environment for sync tasks.
 - **Storage**: Temporary files are stored in `.tmp/`, and final podcasts are organized by notebook title in the configured `podcast_dir`.

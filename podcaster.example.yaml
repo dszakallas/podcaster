@@ -1,7 +1,9 @@
 # Local directory where generated podcasts and metadata are stored
 podcast_dir: "podcasts"
 
-# Configured LLM/agent tools used for executing sub-tasks (like scraping)
+# Configured LLM/agent tools used for executing sub-tasks
+# The agent should have all necessary tools and skills installed to carry out
+# a specific task effectively. Currently the only agentic task is web scraping
 agents:
   # Reference name for an agent definition
   agy-gemini-flash:
@@ -10,23 +12,30 @@ agents:
     # Arguments passed to the command. {{ prompt }} is replaced with the prompt.
     args:
       - "--model"
-      - "Gemini 3.5 Flash (Low)"
+      - "Gemini 3.6 Flash (Low)"
       - "--dangerously-skip-permissions"
       - "-p"
       - "{{ prompt }}"
-  claude:
+  claude-sonnet:
     command: "claude"
     args:
       - "--model"
-      - "claude-sonnet-4-6"
+      - "claude-sonnet-5"
       - "--dangerously-skip-permissions"
       - "-p"
       - "{{ prompt }}"
+  opencode-bailin-qwen:
+    command: opencode
+    args:
+      - run
+      - --model
+      - "bailian-payg/qwen3.6-flash"
+      - "{{ prompt }}"
 
-# Scraper configurations used when extracting web page text/content
+# Agentic scrapers used when extracting web page text/content
 scrapers:
-  default:
-    # The scraping tool/MCP server to run (e.g. "chrome-devtools" or "playwright")
+  default: # Reference name for this scraper configuration
+    # The scraping tool/MCP server to run, will be included in the prompt
     tool: "chrome-devtools"
     # The agent used to control/instruct the scraper
     agent:
@@ -35,19 +44,23 @@ scrapers:
 
 # Configurations for generating podcasts using NotebookLM
 podcast_generators:
-  # Reference name for this generator configuration
-  default:
-    # Target languages for generation (e.g., ["en", "hu"])
-    languages: ["en", "hu"]
+  default: # Reference name for this generator configuration
+    # Target languages for generation
+    languages: ["en", "hu", "cs"]
     # Desired length bucket: "short" (<=12m), "default" (<=25m), "long" (>25m), or "auto" (inferred)
     length: "default"
+  long-en:
+    # Target languages for generation
+    languages: ["en"]
+    length: "long"
 
 # ID3 tagging settings for the generated audio files
 podcast_tags:
-  # The album artist tag applied to the audio files
-  album_artist: "Your Name"
-  # The list of artists tags applied to the audio files
-  artists: ["Your Name"]
+  default:
+    # The album artist tag applied to the audio files
+    album_artist: "Your Name"
+    # The list of artists tags applied to the audio files
+    artists: ["Your Name"]
 
 # Configurations for the transcription of generated podcast audio
 podcast_transcribers:
@@ -64,8 +77,8 @@ workflow:
   deep-dive-default:
     # The workflow type (currently only "deep_dive_article" is supported)
     type: "deep_dive_article"
-    # Reference to an import handler configuration under 'import_handlers'
-    import_handler:
+    # Reference to an importer configuration under 'importers'
+    importer:
       ref: "default"
     podcast_generator:
       # Reference to a key under 'podcast_generators'
@@ -95,22 +108,25 @@ workflow:
       podcast_transcriber:
         # Reference to a key under 'podcast_transcribers'
         ref: "default"
-    # Distribution targets for deploying completed podcasts
+    # ID3 tagging options
+    tagging:
+      enable: true
+      spec:
+        ref: "default"
+    # Distribution targets for deploying completed podcasts. note: they run concurrently
     distribute:
       # Deploy using Plex sync
-      - type: plex
-        # Reference to a Plex destination config under the 'plex' section below
-        ref: my-media-server
+      - plex:
+          ref: my-media-server
       # Deploy using Rsync/Rclone
-      - type: rsync
-        # Reference to an Rsync destination config under the 'rsync' section below
-        ref: gdrive-backup
+      - rsync:
+          ref: gdrive-backup
 
-# Import handlers definition
-import_handlers:
+# Importers definition
+importers:
   default:
     chain:
-      handlers:
+      importers:
         - ref: native
         - ref: scraper
   native:
@@ -132,33 +148,32 @@ import_handlers:
     scraper:
       ref: default
 
-# Rsync and Rclone remote destination targets
-rsync:
-  main-server:
-    method: "rsync"
-    destination: "user@host:/mnt/podcasts"
+# Distribution target definitions (rsync, rclone, plex)
+distributions:
   gdrive-backup:
-    method: "rclone"
-    destination: "gdrive:podcasts"
-    # Optional flags passed directly to rclone execution
-    rclone_flags: []
-
-# Plex Media Server targets and libraries
-plex:
+    rsync: # rsync handles both RSync/Rclone
+      method: "rclone"
+      destination: "gdrive:podcasts"
+      flags: []
   my-media-server:
-    # Optional rsync configuration to sync files to server before rescanning Plex library
-    rsync:
-      enabled: true
-      # Reference to a config key under the 'rsync' section
-      ref: main-server
-    # Section ID of the target library in Plex
-    section_id: 14
-    # Library directory path on the Plex server
-    server_library_path: "/mnt/podcasts"
-    # Base URL of the Plex server
-    server_url: "http://localhost:32400"
-    # Plex authentication token
-    token: "your-plex-token"
+    plex:
+      # Optional rsync configuration to sync files to server before rescanning Plex library
+      # It makes sure stuff is awaited
+      rsync:
+        enable: true
+        # Reference to an rsync distribution key above
+        spec:
+          method: "rsync"
+          destination: "user@host:/mnt/podcasts"
+      # Section ID of the target library in Plex
+      section_id: 14
+      # Library directory path on the Plex server
+      server_library_path: "/mnt/podcasts"
+      # Base URL of the Plex server
+      server_url: "http://localhost:32400"
+      # Plex authentication token
+      token: "your-plex-token"
+
 
 # Google Cloud Platform configuration (required for cover generation and transcription)
 gcp:
