@@ -346,7 +346,12 @@ async def scrape_source(
 
     stderr_lines: list[str] = []
 
-    async def _log_stderr() -> None:
+    async def _read_stdout() -> bytes:
+        if process.stdout:
+            return await process.stdout.read()
+        return b""
+
+    async def _read_stderr() -> None:
         if process.stderr:
             while True:
                 line = await process.stderr.readline()
@@ -357,9 +362,11 @@ async def scrape_source(
                     logger.info(line_str)
                     stderr_lines.append(line_str)
 
-    stderr_task = asyncio.create_task(_log_stderr())
-    stdout_bytes, _ = await process.communicate()
-    await stderr_task
+    stdout_bytes, _, _ = await asyncio.gather(
+        _read_stdout(),
+        _read_stderr(),
+        process.wait(),
+    )
 
     if process.returncode != 0:
         error_msg = "\n".join(stderr_lines).strip()
