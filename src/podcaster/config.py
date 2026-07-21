@@ -1,12 +1,100 @@
-from typing import Any, Dict, List, Literal, Optional, Union
+from typing import Any, Dict, Generic, List, Literal, Optional, TypeVar, Union
 
 from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
     RootModel,
+    TypeAdapter,
+    ValidationError,
     model_validator,
 )
+
+T = TypeVar("T", bound=BaseModel)
+
+
+class Ref(BaseModel, Generic[T]):
+    model_config = ConfigDict(extra="allow")
+    ref: Optional[str] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _parse(cls, data: Any) -> Any:
+        if isinstance(data, str):
+            return {"ref": data}
+        return data
+
+    @model_validator(mode="after")
+    def _validate_extra(self) -> "Ref[T]":
+        metadata = getattr(self.__class__, "__pydantic_generic_metadata__", None)
+        if not metadata or not metadata.get("args"):
+            return self
+        T_type = metadata["args"][0]
+        if not isinstance(T_type, type) or not issubclass(T_type, BaseModel):
+            return self
+
+        if self.model_extra:
+            errors = []
+            validated_extra = {}
+            for name, val in self.model_extra.items():
+                if name not in T_type.model_fields:
+                    if T_type.model_config.get("extra") == "forbid":
+                        errors.append(
+                            {
+                                "type": "extra_forbidden",
+                                "loc": (name,),
+                                "input": val,
+                                "msg": "Extra inputs are not permitted",
+                            }
+                        )
+                    continue
+
+                field_info = T_type.model_fields[name]
+                try:
+                    adapter = TypeAdapter(field_info.annotation)
+                    validated_extra[name] = adapter.validate_python(val)
+                except ValidationError as e:
+                    for err in e.errors():
+                        err_loc = (name,) + err["loc"]
+                        errors.append(
+                            {
+                                "type": err["type"],
+                                "loc": err_loc,
+                                "input": err["input"],
+                                "msg": err["msg"],
+                            }
+                        )
+
+            if errors:
+                raise ValidationError.from_exception_data(
+                    self.__class__.__name__, errors
+                )
+
+            self.model_extra.clear()
+            self.model_extra.update(validated_extra)
+
+        return self
+
+    def __getattr__(self, name: str) -> Any:
+        if self.model_extra and name in self.model_extra:
+            return self.model_extra[name]
+        metadata = getattr(self.__class__, "__pydantic_generic_metadata__", None)
+        if metadata and metadata.get("args"):
+            T_type = metadata["args"][0]
+            # Resolve forward-reference strings
+            if isinstance(T_type, str):
+                import sys
+
+                T_type = sys.modules[__name__].__dict__.get(T_type)
+            if (
+                isinstance(T_type, type)
+                and issubclass(T_type, BaseModel)
+                and name in T_type.model_fields
+            ):
+                return None
+        raise AttributeError(
+            f"'{self.__class__.__name__}' object has no attribute '{name}'"
+        )
 
 
 class PodcastGenerationConfig(BaseModel):
@@ -39,60 +127,30 @@ class ScraperAgentConfig(BaseModel):
     args: Optional[List[str]] = None
 
 
-class ScraperRef(BaseModel):
+class ScraperConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    ref: Optional[str] = None
-    tool: Optional[str] = None
+    tool: str = "playwright"
     agent: Optional[ScraperAgentConfig] = None
-
-
-class ImporterItemConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    ref: Optional[str] = None
-    match: Optional[List[str]] = None
-    native: Optional[NativeImporterConfig] = None
-    scraper: Optional[ScraperRef] = None
-    chain: Optional["ChainImporterConfig"] = None
 
 
 class ChainImporterConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    importers: List["ImporterRef"] = Field(default_factory=list)
+    importers: List[Ref["ImporterConfig"]] = Field(default_factory=list)
 
 
 class ImporterConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     match: List[str] = Field(default_factory=lambda: [".*"])
     native: Optional[NativeImporterConfig] = None
-    scraper: Optional[ScraperRef] = None
+    scraper: Optional[Ref[ScraperConfig]] = None
     chain: Optional[ChainImporterConfig] = None
-
-
-class ImporterRef(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    ref: Optional[str] = None
-    match: Optional[List[str]] = None
-    native: Optional[NativeImporterConfig] = None
-    scraper: Optional[ScraperRef] = None
-    chain: Optional[ChainImporterConfig] = None
-
-    @model_validator(mode="before")
-    @classmethod
-    def _parse_string(cls, data: Any) -> Any:
-        if isinstance(data, str):
-            return {"ref": data}
-        return data
-
-
-ImporterItemConfig.model_rebuild()
-ChainImporterConfig.model_rebuild()
 
 
 class EnrichWebConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     enable: bool = True
     retry_count: int = 0
-    fallback_mechanism: Union[str, ImporterRef] = "ignore"
+    fallback_mechanism: Union[str, Ref[ImporterConfig]] = "ignore"
     spec: EnrichWebSpecConfig = Field(default_factory=EnrichWebSpecConfig)
 
 
@@ -107,20 +165,18 @@ class GenerateCoverConfig(BaseModel):
     spec: GenerateCoverSpecConfig = Field(default_factory=GenerateCoverSpecConfig)
 
 
-class PodcastTranscriberRef(BaseModel):
+class PodcastTranscriptionConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    ref: Optional[str] = None
-    # Optional inline config overrides
-    speed_factor: Optional[float] = None
-    languages: Optional[List[str]] = None
+    speed_factor: float = 1.5
+    languages: List[str] = Field(default_factory=lambda: [])
 
 
 class TranscribeConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     enable: bool = False
     retry_count: int = 0
-    podcast_transcriber: PodcastTranscriberRef = Field(
-        default_factory=PodcastTranscriberRef
+    podcast_transcriber: Ref[PodcastTranscriptionConfig] = Field(
+        default_factory=Ref[PodcastTranscriptionConfig]
     )
 
 
@@ -131,25 +187,10 @@ class RsyncDistributionConfig(BaseModel):
     flags: List[str] = Field(default_factory=list)
 
 
-class PlexRsyncSpecConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    ref: Optional[str] = None
-    method: Optional[Literal["rsync", "rclone"]] = None
-    destination: Optional[str] = None
-    flags: Optional[List[str]] = None
-
-    @model_validator(mode="before")
-    @classmethod
-    def _parse_string(cls, data: Any) -> Any:
-        if isinstance(data, str):
-            return {"ref": data}
-        return data
-
-
 class PlexRsyncConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     enable: bool = True
-    spec: Optional[PlexRsyncSpecConfig] = None
+    spec: Optional[Ref[RsyncDistributionConfig]] = None
 
 
 class PlexDistributionConfig(BaseModel):
@@ -167,65 +208,11 @@ class DistributionConfig(BaseModel):
     plex: Optional[PlexDistributionConfig] = None
 
 
-class RsyncDistributionRef(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    ref: Optional[str] = None
-    method: Optional[Literal["rsync", "rclone"]] = None
-    destination: Optional[str] = None
-    flags: Optional[List[str]] = None
-
-    @model_validator(mode="before")
-    @classmethod
-    def _parse_string(cls, data: Any) -> Any:
-        if isinstance(data, str):
-            return {"ref": data}
-        return data
-
-
-class PlexDistributionRef(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    ref: Optional[str] = None
-    section_id: Optional[int] = None
-    server_library_path: Optional[str] = None
-    server_url: Optional[str] = None
-    token: Optional[str] = None
-    rsync: Optional[PlexRsyncConfig] = None
-
-    @model_validator(mode="before")
-    @classmethod
-    def _parse_string(cls, data: Any) -> Any:
-        if isinstance(data, str):
-            return {"ref": data}
-        return data
-
-
 class DistributionRef(BaseModel):
     model_config = ConfigDict(extra="forbid")
     ref: Optional[str] = None
-    rsync: Optional[Union[RsyncDistributionRef, str]] = None
-    plex: Optional[Union[PlexDistributionRef, str]] = None
-
-    @model_validator(mode="before")
-    @classmethod
-    def _parse_string(cls, data: Any) -> Any:
-        if isinstance(data, str):
-            return {"ref": data}
-        return data
-
-
-class PodcastGeneratorRef(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    ref: Optional[str] = None
-    # Optional inline config if ref is not used
-    languages: Optional[List[str]] = None
-    length: Optional[Literal["short", "default", "long", "auto"]] = None
-
-
-class TaggingSpecConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    ref: Optional[str] = None
-    album_artist: Optional[str] = None
-    artists: Optional[List[str]] = None
+    rsync: Optional[Ref[RsyncDistributionConfig]] = None
+    plex: Optional[Ref[PlexDistributionConfig]] = None
 
     @model_validator(mode="before")
     @classmethod
@@ -238,17 +225,19 @@ class TaggingSpecConfig(BaseModel):
 class TaggingConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     enable: bool = True
-    spec: Optional[TaggingSpecConfig] = Field(
-        default_factory=lambda: TaggingSpecConfig(ref="default")
+    spec: Optional[Ref[PodcastTagsConfig]] = Field(
+        default_factory=lambda: Ref[PodcastTagsConfig](ref="default")
     )
 
 
 class DeepDiveArticleConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
     type: Literal["deep_dive_article"] = "deep_dive_article"
-    podcast_generator: PodcastGeneratorRef = Field(default_factory=PodcastGeneratorRef)
-    importer: ImporterRef = Field(
-        default_factory=lambda: ImporterRef(ref="default"),
+    podcast_generator: Ref[PodcastGenerationConfig] = Field(
+        default_factory=Ref[PodcastGenerationConfig]
+    )
+    importer: Ref[ImporterConfig] = Field(
+        default_factory=lambda: Ref[ImporterConfig](ref="default"),
     )
     enrich_web: EnrichWebConfig = Field(default_factory=EnrichWebConfig)
     generate_cover: GenerateCoverConfig = Field(default_factory=GenerateCoverConfig)
@@ -268,22 +257,10 @@ class GCPConfig(BaseModel):
     gcs_bucket: Optional[str] = None
 
 
-class ScraperConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    tool: str = "playwright"
-    agent: Optional[ScraperAgentConfig] = None
-
-
 class AgentConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     command: str
     args: List[str] = Field(default_factory=list)
-
-
-class PodcastTranscriptionConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    speed_factor: float = 1.5
-    languages: List[str] = Field(default_factory=lambda: [])
 
 
 class AppConfig(BaseModel):
@@ -304,8 +281,8 @@ class AppConfig(BaseModel):
             "default": ImporterConfig(
                 chain=ChainImporterConfig(
                     importers=[
-                        ImporterRef(ref="native"),
-                        ImporterRef(ref="scraper"),
+                        Ref[ImporterConfig](ref="native"),
+                        Ref[ImporterConfig](ref="scraper"),
                     ]
                 )
             ),
@@ -324,7 +301,7 @@ class AppConfig(BaseModel):
             ),
             "scraper": ImporterConfig(
                 match=["https?://.*", "!file:.*", "!gdrive:.*"],
-                scraper=ScraperRef(ref="default"),
+                scraper=Ref[ScraperConfig](ref="default"),
             ),
         },
     )
@@ -336,3 +313,7 @@ class AppConfig(BaseModel):
         default_factory=dict,
     )
     gcp: GCPConfig = Field(default_factory=GCPConfig)
+
+
+ChainImporterConfig.model_rebuild()
+ImporterConfig.model_rebuild()

@@ -579,6 +579,8 @@ async def run(
         length = gen_length
     if not languages:
         languages = gen_languages
+    if not languages:
+        languages = ["en"]
 
     if length != "auto":
         length = resolve_duration(length)

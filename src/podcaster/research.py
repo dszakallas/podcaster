@@ -9,7 +9,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, AsyncGenerator, Callable, List, Optional, Union
 
-from .config import AppConfig, ImporterConfig, ImporterRef
+from .config import AppConfig, ImporterConfig, Ref
 from .utils import (
     RetryingNotebookLMClient,
     get_storage_path,
@@ -178,12 +178,12 @@ class ChainImporter(Importer):
 
 
 def build_importer(
-    importer_input: Union[str, ImporterRef, ImporterConfig, None] = None,
+    importer_input: Union[str, Ref[ImporterConfig], ImporterConfig, None] = None,
     config: Optional[AppConfig] = None,
     visited_refs: Optional[set[str]] = None,
 ) -> Importer:
     """Constructs a concrete Importer (NativeImporter, ScraperImporter, or ChainImporter)
-    from an importer name, ImporterRef, or ImporterConfig.
+    from an importer name, Ref[ImporterConfig], or ImporterConfig.
     """
     if visited_refs is None:
         visited_refs = set()
@@ -201,7 +201,7 @@ def build_importer(
             raise ValueError(f"Importer '{name}' not found in configuration.")
         visited_refs.add(name)
         importer_cfg = importers_dict[name]
-    elif isinstance(importer_input, ImporterRef):
+    elif isinstance(importer_input, Ref):
         if importer_input.ref:
             ref = importer_input.ref
             if ref in visited_refs:
