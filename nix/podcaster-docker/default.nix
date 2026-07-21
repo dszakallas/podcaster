@@ -1,11 +1,14 @@
 {
+  name ? "podcaster",
   ai-sdk-anthropic,
+  antigravity-cli,
   bash,
   buildEnv,
   cacert,
   coreutils,
   dockerTools,
   ffmpeg,
+  lib,
   opencode,
   playwright-driver,
   playwright-mcp,
@@ -14,12 +17,20 @@
   replaceVars,
   rsync,
   runCommand,
+  withAgents ? [
+    "opencode"
+    "antigravity-cli"
+  ],
 }:
 let
+  hasAgents = withAgents != null && (lib.length withAgents > 0);
+  hasOpencode = withAgents != null && (lib.elem "opencode" withAgents);
+  hasAntigravity = withAgents != null && (lib.elem "antigravity-cli" withAgents);
+
   playwright-browsers = playwright-driver.selectBrowsers {
-    withWebkit = false;
+    withWebkit = !hasAgents;
     withChromium = false;
-    withChromiumHeadlessShell = true;
+    withChromiumHeadlessShell = hasAgents;
     withFirefox = false;
     withFfmpeg = true;
   };
@@ -34,9 +45,32 @@ let
     mkdir -p $out/etc
     cp ${opencodeConfig} $out/etc/opencode.json
   '';
+
+  antigravityConfig = replaceVars ./antigravity.json {
+    playwrightMcpPath = "${playwright-mcp}/bin/playwright-mcp";
+    playwrightBrowsersPath = "${playwright-browsers}";
+  };
+
+  antigravityConfigDir = runCommand "antigravity-config-dir" { } ''
+    mkdir -p $out/workspace/.gemini/config
+    cp ${antigravityConfig} $out/workspace/.gemini/config/mcp_config.json
+  '';
+
+  agentPaths =
+    lib.optionals hasAgents [ playwright-mcp ]
+    ++ lib.optionals hasOpencode [
+      opencode
+      opencodeConfigDir
+    ]
+    ++ lib.optionals hasAntigravity [
+      antigravity-cli
+      antigravityConfigDir
+    ];
+
+  agentEnvs = lib.optionals hasOpencode [ "OPENCODE_CONFIG=/etc/opencode.json" ];
 in
 dockerTools.buildImage {
-  name = "podcaster";
+  inherit name;
   tag = "latest";
 
   copyToRoot = buildEnv {
@@ -49,13 +83,11 @@ dockerTools.buildImage {
       ffmpeg
       rsync
       rclone
-      opencode
-      playwright-mcp
-      opencodeConfigDir
-    ];
+    ] ++ agentPaths;
     pathsToLink = [
       "/bin"
       "/etc"
+      "/workspace"
     ];
   };
 
@@ -65,7 +97,6 @@ dockerTools.buildImage {
       "HOME=/workspace"
       "PLAYWRIGHT_BROWSERS_PATH=${playwright-browsers}"
       "PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS=true"
-      "OPENCODE_CONFIG=/etc/opencode.json"
-    ];
+    ] ++ agentEnvs;
   };
 }

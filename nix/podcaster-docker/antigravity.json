@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "playwright": {
+      "command": "@playwrightMcpPath@",
+      "args": ["--headless", "--browser", "chromium"],
+      "env": {
+        "PLAYWRIGHT_BROWSERS_PATH": "@playwrightBrowsersPath@"
+      }
+    }
+  }
+}

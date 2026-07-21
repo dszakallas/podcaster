@@ -39,25 +39,60 @@
 
         ai-sdk-anthropic = pkgs.callPackage ./nix/ai-sdk-anthropic { };
 
+        opencode =
+          # avoid AVX/AVX2 is on x86_64, older CPUs do not support it
+          if system == "x86_64-linux" then
+            let
+              bun-baseline = pkgs.bun.overrideAttrs (old: {
+                src = pkgs.fetchurl {
+                  url = "https://github.com/oven-sh/bun/releases/download/bun-v${old.version}/bun-linux-x64-baseline.zip";
+                  hash = "sha256-nYokKSpwaAkCBdqsCloiP19pc29Sh+N7+I07QDHtx1A=";
+                };
+              });
+            in
+            pkgs.opencode.override {
+              bun = bun-baseline;
+            }
+          else
+            pkgs.opencode;
+
         podcaster = pkgs.callPackage ./nix/podcaster.nix {
           inherit pyproject-nix uv2nix pyproject-build-systems;
         };
 
+        dockerImageWithAntigravityCli = pkgs.callPackage ./nix/podcaster-docker {
+          inherit podcaster ai-sdk-anthropic;
+          name = "podcaster-antigravity-cli";
+          withAgents = [
+            "antigravity-cli"
+          ];
+        };
+
+        dockerImageWithOpenCode = pkgs.callPackage ./nix/podcaster-docker {
+          inherit podcaster ai-sdk-anthropic opencode;
+          name = "podcaster-opencode";
+          withAgents = [
+            "opencode"
+          ];
+        };
+
         dockerImage = pkgs.callPackage ./nix/podcaster-docker {
           inherit podcaster ai-sdk-anthropic;
+          withAgents = null;
         };
       in
       {
         packages = {
           default = podcaster;
           podcaster = podcaster;
-          dockerImage = dockerImage;
           ai-sdk-anthropic = ai-sdk-anthropic;
         };
 
         dockerImages = {
           default = dockerImage;
           podcaster = dockerImage;
+          podcaster-antigravity-cli = dockerImageWithAntigravityCli;
+          podcaster-opencode = dockerImageWithOpenCode;
         };
       }
     );
