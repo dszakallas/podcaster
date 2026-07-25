@@ -60,6 +60,6 @@
   '';
 
   profiles = {
-    agents.module = import ./devenv/profiles/agents args;
+    agents.module = import ./devenv/agents.nix args;
   };
 }

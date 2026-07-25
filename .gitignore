@@ -16,7 +16,7 @@ downloads/
 # Tools/IDEs
 /.mcp.json
 /.copilot
-/.agents/mcp_config.json
+/.agents
 /.vscode
 /.gemini
 /.antigravitycli
