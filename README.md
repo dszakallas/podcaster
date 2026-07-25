@@ -67,8 +67,13 @@ docker load < result
 
 ### 4. Development Environment with `devenv`
 
+When developing with coding agents, add the `agents` profile, to
+enable setting up skills, mcp servers, etc.
+
+This is hidden behind a profile flag for leaner installs on CI.
+
 ```bash
-devenv shell
+devenv shell --profile agents
 ```
 
 ## Configuration
