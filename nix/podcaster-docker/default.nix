@@ -83,7 +83,8 @@ dockerTools.buildImage {
       ffmpeg
       rsync
       rclone
-    ] ++ agentPaths;
+    ]
+    ++ agentPaths;
     pathsToLink = [
       "/bin"
       "/etc"
@@ -96,6 +97,7 @@ dockerTools.buildImage {
       "HOME=/workspace"
       "PLAYWRIGHT_BROWSERS_PATH=${playwright-browsers}"
       "PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS=true"
-    ] ++ agentEnvs;
+    ]
+    ++ agentEnvs;
   };
 }

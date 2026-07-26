@@ -1,15 +1,30 @@
-{ pkgs, lib, config, inputs, ... }@args:
-
 {
-  packages = (with pkgs; [
-    git
-    python312
-    black
-    ruff
-    prek
-    pyright
-    uv
-  ]);
+  pkgs,
+  lib,
+  config,
+  inputs,
+  dotfiles-common,
+  ...
+}@args:
+let
+  lib' = dotfiles-common.lib;
+in
+{
+  imports = [
+    dotfiles-common.devenvModules.recommended
+  ];
+  packages = (
+    with pkgs;
+    [
+      git
+      python312
+      black
+      ruff
+      prek
+      pyright
+      uv
+    ]
+  );
   dotenv.enable = true;
   git-hooks = {
     package = pkgs.prek;
@@ -59,7 +74,5 @@
     export PATH="$DEVENV_ROOT/.venv/bin:$PATH"
   '';
 
-  profiles = {
-    agents.module = import ./devenv/agents.nix args;
-  };
+  profiles = lib'.importRec1 ./devenv args;
 }
