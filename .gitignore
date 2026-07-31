@@ -19,9 +19,12 @@ downloads/
 /.agents
 /.vscode
 /.gemini
+/.claude
 /.antigravitycli
 /opencode.json
+/.opencode
 !nix/opencode.json
+/result
 
 # Python
 __pycache__/
