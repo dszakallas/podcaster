@@ -8,10 +8,13 @@ Automation tools for generating podcasts from articles and documents mostly usin
 - **Paywall Bypassing**: Optional fallback for scraping blocked sites using local agents and tools (experimental).
 - **Deep Research**: Enriches the notebook with web research related to your source material.
 - **AI Cover Art**: Generates custom 1:1 album covers using Gemini.
-- **Transcription**: Generates perfectly synchronized LRC lyrics (grouped into 2-second readable segments) using Google Cloud Speech-to-Text (Chirp 2).
-- **Rsync & Rclone Integration**: Automatically syncs final audio and lyric files to a destination server (supporting both `rsync` and `rclone`), tags them, and triggers a library rescan in Plex.
+- **Transcription**: Generates perfectly synchronized LRC lyrics (grouped into 2-second readable segments)
+  using Google Cloud Speech-to-Text (Chirp 2).
+- **Rsync & Rclone Integration**: Automatically syncs final audio and lyric files to a destination server
+  (supporting both `rsync` and `rclone`), tags them, and triggers a library rescan in Plex.
 - **Multi-lingual**: Support for generating podcasts in multiple languages.
-- **Streaming CLI Pipeline**: Uses asynchronous generators and NDJSON to allow real-time pipelining of tasks (`generate | poll | download | tag`).
+- **Streaming CLI Pipeline**: Uses asynchronous generators and NDJSON to allow real-time pipelining of tasks
+  (`generate | poll | download | tag`).
 
 ## Prerequisites
 
@@ -144,8 +147,11 @@ podcaster transcription download
 
 #### Import Web
 
-Imports a URL, Google Drive link, or local file into a notebook using configurable importers (`importers:` section in `podcaster.yaml`).
-Source inputs are normalized to absolute `file://` URIs for local files before matcher evaluation (`normalize_source`). Importers evaluate regex match patterns (including negative patterns like `!https?://.*wsj\\.com/.*` for paywalled or unimportable sites).
+Imports a URL, Google Drive link, or local file into a notebook using configurable importers (`importers:` section in
+`podcaster.yaml`).
+Source inputs are normalized to absolute `file://` URIs for local files before matcher evaluation (`normalize_source`).
+Importers evaluate regex match patterns (including negative patterns like `!https?://.*wsj\\.com/.*` for paywalled or
+unimportable sites).
 
 ```bash
 # Standard import using default chain importer (native -> scraper)
@@ -160,7 +166,10 @@ podcaster import-web <notebook_id> <url> --importer scraper
 Creates a new remote notebook or pulls details for an existing one, and initializes its local directory.
 
 > [!NOTE]
-> When using `--from-source`, the remote notebook is created first, the source is uploaded, and the title is automatically derived from the uploaded source. Only after a successful upload is the local podcast directory created (named `[Derived Title] [nlm_<notebook_id>]`). If remote creation or upload fails, the remote notebook is automatically cleaned up (deleted) to prevent orphaned notebooks, and no local directory is created.
+> When using `--from-source`, the remote notebook is created first, the source is uploaded, and the title is
+> automatically derived from the uploaded source. Only after a successful upload is the local podcast directory created
+> (named `[Derived Title] [nlm_<notebook_id>]`). If remote creation or upload fails, the remote notebook is
+> automatically cleaned up (deleted) to prevent orphaned notebooks, and no local directory is created.
 
 ```bash
 # Initialize a new notebook with a title
@@ -176,14 +185,16 @@ podcaster init-podcast-notebook --from-source ./article.txt
 #### Transcribe a podcast
 
 ```bash
-podcaster transcription create --arg-json '{"path": "./podcasts/episode.m4a", "metadata": {"generate-podcast": {"language": "en"}}}' | \
-podcaster transcription poll | \
-podcaster transcription download
+podcaster transcription create \
+  --arg-json '{"path": "./podcasts/episode.m4a", "metadata": {"generate-podcast": {"language": "en"}}}' | \
+  podcaster transcription poll | \
+  podcaster transcription download
 ```
 
 #### Distribute a podcast
 
-Distributes a podcast using a named distribution preset from the configuration (supporting rsync, rclone, and Plex targets). Supports passing custom flags to `rsync` or `rclone` via `--flag`.
+Distributes a podcast using a named distribution preset from the configuration (supporting rsync/rclone with optional
+notifiers like Plex or Discord). Supports passing custom flags to `rsync` or `rclone` via `--flag`.
 
 ```bash
 podcaster distribute <notebook_id> --preset my-media-server [--flag "--dry-run"]
@@ -245,8 +256,8 @@ The hooks are configured in `devenv.nix` and run automatically on `git commit`.
 - **`src/podcaster/config.py`**: Pydantic schema for `podcaster.yaml`.
 - **`src/podcaster/audio_gen/core.py`**: Streaming generators for NotebookLM artifact interaction.
 - **`src/podcaster/cli.py`**: Command-line interface bridging to the generators.
-- **`src/podcaster/research.py`**: Context enrichment logic and web importing.
-- **`src/podcaster/plex.py`**: Plex library synchronization.
+- **`src/podcaster/notifier/`**: Notification mechanisms (Plex, Discord).
+- **`src/podcaster/distribution/`**: Distribution mechanisms (Rsync, Rclone).
 - **`src/podcaster/tagging.py`**: Comprehensive audio metadata (ID3/MP4/OGG) management.
 - **`src/podcaster/utils.py`**: Shared folder management and sanitization.
 

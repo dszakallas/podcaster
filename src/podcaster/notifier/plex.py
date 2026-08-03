@@ -4,10 +4,8 @@ from typing import Optional, Union
 
 import httpx
 
-from ..config import AppConfig, PlexRsyncConfig
-from ..utils import find_notebook_dir, load_config, setup_logging
-from .base import Distribution
-from .rsync import sync_podcast
+from ..utils import find_notebook_dir, get_env_var, load_config, setup_logging
+from .base import Notifier
 
 logger = logging.getLogger(__name__)
 
@@ -19,10 +17,8 @@ async def sync_to_plex(
     plex_server_url: Optional[str] = None,
     plex_token: Optional[str] = None,
     server_library_path: Optional[str] = None,
-    rsync_destination: Optional[str] = None,
-    sync_method: str = "rsync",
     verbose: bool = False,
-    flags: Optional[list[str]] = None,
+    name: Optional[str] = None,
 ) -> dict:
     if verbose:
         setup_logging(verbose)
@@ -30,16 +26,6 @@ async def sync_to_plex(
     config = load_config()
     if not podcast_dir:
         podcast_dir = config.podcast_dir
-
-    if rsync_destination:
-        await sync_podcast(
-            notebook_id,
-            rsync_destination,
-            method=sync_method,
-            podcast_dir=podcast_dir,
-            verbose=verbose,
-            flags=flags,
-        )
 
     notebook_dir_name = find_notebook_dir(podcast_dir, notebook_id)
     if not notebook_dir_name:
@@ -52,10 +38,12 @@ async def sync_to_plex(
     if not os.path.exists(source_dir):
         raise FileNotFoundError(f"Source directory {source_dir} not found.")
 
-    plex_server_url = plex_server_url or os.environ.get("PLEX_SERVER_URL")
-    plex_token = plex_token or os.environ.get("PLEX_TOKEN")
-    server_library_path = server_library_path or os.environ.get(
-        "PLEX_SERVER_LIBRARY_PATH"
+    plex_server_url = plex_server_url or get_env_var(
+        "NOTIFIER", name, "PLEX_SERVER_URL"
+    )
+    plex_token = plex_token or get_env_var("NOTIFIER", name, "PLEX_TOKEN")
+    server_library_path = server_library_path or get_env_var(
+        "NOTIFIER", name, "PLEX_SERVER_LIBRARY_PATH"
     )
 
     if not plex_server_url or not plex_token:
@@ -99,8 +87,8 @@ async def sync_to_plex(
     }
 
 
-class PlexDistribution(Distribution):
-    """Plex distribution mechanism implementation."""
+class PlexNotifier(Notifier):
+    """Plex library refresh notifier implementation."""
 
     def __init__(
         self,
@@ -108,41 +96,21 @@ class PlexDistribution(Distribution):
         server_library_path: Optional[str] = None,
         server_url: Optional[str] = None,
         token: Optional[str] = None,
-        rsync_config: Optional[PlexRsyncConfig] = None,
-        config: Optional[AppConfig] = None,
+        name: Optional[str] = None,
     ):
         self.section_id = section_id
         self.server_library_path = server_library_path
         self.server_url = server_url
         self.token = token
-        self.rsync_config = rsync_config
-        self.config = config
+        self.name = name
 
-    async def distribute(
+    async def notify(
         self,
         notebook_id: str,
+        dist_result: Optional[dict] = None,
         podcast_dir: Optional[str] = None,
         verbose: bool = False,
     ) -> dict:
-        rsync_dest = None
-        rsync_method = "rsync"
-        flags = None
-
-        if self.rsync_config and self.rsync_config.enable:
-            spec = self.rsync_config.spec
-            if spec is not None:
-                spec_ref = spec.ref
-                if spec_ref and self.config and spec_ref in self.config.distributions:
-                    ref_dist = self.config.distributions[spec_ref]
-                    if ref_dist.rsync:
-                        rsync_dest = ref_dist.rsync.destination
-                        rsync_method = ref_dist.rsync.method or "rsync"
-                        flags = ref_dist.rsync.flags
-                elif spec.destination:
-                    rsync_dest = spec.destination
-                    rsync_method = spec.method or "rsync"
-                    flags = spec.flags
-
         return await sync_to_plex(
             notebook_id=notebook_id,
             plex_section_id=self.section_id,
@@ -150,8 +118,6 @@ class PlexDistribution(Distribution):
             plex_server_url=self.server_url,
             plex_token=self.token,
             server_library_path=self.server_library_path,
-            rsync_destination=rsync_dest,
-            sync_method=rsync_method,
             verbose=verbose,
-            flags=flags,
+            name=self.name,
         )

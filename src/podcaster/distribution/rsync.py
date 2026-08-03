@@ -3,6 +3,7 @@ import os
 import subprocess
 from typing import Optional
 
+from ..notifier import Notifier
 from ..utils import find_notebook_dir, load_config, setup_logging
 from .base import Distribution
 
@@ -94,18 +95,22 @@ class RsyncDistribution(Distribution):
         destination: str,
         method: str = "rsync",
         flags: Optional[list[str]] = None,
+        notifiers: Optional[list[Notifier]] = None,
+        name: Optional[str] = None,
     ):
+        super().__init__(notifiers=notifiers)
         self.destination = destination
         self.method = method
         self.flags = flags or []
+        self.name = name
 
-    async def distribute(
+    async def _distribute(
         self,
         notebook_id: str,
         podcast_dir: Optional[str] = None,
         verbose: bool = False,
     ) -> dict:
-        return await sync_podcast(
+        res = await sync_podcast(
             notebook_id,
             self.destination,
             method=self.method,
@@ -113,3 +118,6 @@ class RsyncDistribution(Distribution):
             verbose=verbose,
             flags=self.flags,
         )
+        if self.name:
+            res["distribution"] = self.name
+        return res

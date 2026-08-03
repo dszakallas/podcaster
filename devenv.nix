@@ -3,15 +3,15 @@
   lib,
   config,
   inputs,
-  dotfiles-common,
+  bikeshed,
   ...
 }@args:
 let
-  lib' = dotfiles-common.lib;
+  lib' = bikeshed.lib;
 in
 {
   imports = [
-    dotfiles-common.devenvModules.recommended
+    bikeshed.devenvModules.recommended
   ];
   packages = (
     with pkgs;
