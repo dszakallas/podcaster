@@ -1,4 +1,13 @@
-from typing import Any, Dict, Generic, List, Literal, Optional, TypeVar, Union
+from typing import (
+    Any,
+    Dict,
+    Generic,
+    List,
+    Literal,
+    Optional,
+    TypeVar,
+    Union,
+)
 
 from pydantic import (
     BaseModel,
@@ -187,39 +196,37 @@ class RsyncDistributionConfig(BaseModel):
     flags: List[str] = Field(default_factory=list)
 
 
-class PlexRsyncConfig(BaseModel):
+class PlexNotifierConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    enable: bool = True
-    spec: Optional[Ref[RsyncDistributionConfig]] = None
-
-
-class PlexDistributionConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    section_id: int
-    server_library_path: str
+    section_id: Union[int, str]
+    server_library_path: Optional[str] = None
     server_url: Optional[str] = None
     token: Optional[str] = None
-    rsync: Optional[PlexRsyncConfig] = None
+
+
+class DiscordNotifierConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    webhook_url: Optional[str] = None
+    bot_token: Optional[str] = None
+    channel_id: Optional[Union[int, str]] = None
+
+
+class NotifierConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    plex: Optional[PlexNotifierConfig] = None
+    discord: Optional[DiscordNotifierConfig] = None
+
+
+NotifierRef = Ref[NotifierConfig]
 
 
 class DistributionConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     rsync: Optional[RsyncDistributionConfig] = None
-    plex: Optional[PlexDistributionConfig] = None
+    notifiers: List[NotifierRef] = Field(default_factory=list)
 
 
-class DistributionRef(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    ref: Optional[str] = None
-    rsync: Optional[Ref[RsyncDistributionConfig]] = None
-    plex: Optional[Ref[PlexDistributionConfig]] = None
-
-    @model_validator(mode="before")
-    @classmethod
-    def _parse_string(cls, data: Any) -> Any:
-        if isinstance(data, str):
-            return {"ref": data}
-        return data
+DistributionRef = Ref[DistributionConfig]
 
 
 class TaggingConfig(BaseModel):
@@ -309,6 +316,9 @@ class AppConfig(BaseModel):
         default_factory=lambda: {"default": PodcastTagsConfig()}
     )
     workflow: WorkflowConfig = Field(default_factory=lambda: WorkflowConfig(root={}))
+    notifiers: Dict[str, NotifierConfig] = Field(
+        default_factory=dict,
+    )
     distributions: Dict[str, DistributionConfig] = Field(
         default_factory=dict,
     )

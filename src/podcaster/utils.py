@@ -4,6 +4,7 @@ import inspect
 import json
 import logging
 import os
+import re
 import sys
 import time
 from datetime import datetime
@@ -11,6 +12,31 @@ from pathlib import Path
 from typing import Optional
 
 import yaml
+
+
+def get_env_var(
+    kind: str,
+    name: Optional[str],
+    var_name: str,
+    default: Optional[str] = None,
+) -> Optional[str]:
+    """Resolves an environment variable with a component-scoped fallback mechanism.
+
+    Checks:
+    1. <KIND>_<UPPERCASED_UNDERSCORED_NAME>_<VAR_NAME> (if name is provided)
+    2. <VAR_NAME>
+    3. default
+    """
+    if name:
+        sanitized_name = re.sub(r"[^A-Za-z0-9]+", "_", name).strip("_").upper()
+        scoped_var = f"{kind.upper()}_{sanitized_name}_{var_name}"
+        val = os.environ.get(scoped_var)
+        if val is not None and val != "":
+            return val
+    val = os.environ.get(var_name)
+    if val is not None and val != "":
+        return val
+    return default
 
 
 class StructuredFormatter(logging.Formatter):

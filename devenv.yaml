@@ -7,8 +7,8 @@ inputs:
     inputs:
       nixpkgs:
         follows: nixpkgs
-  dotfiles-common:
-    url: github:dszakallas/dotfiles-common
+  bikeshed:
+    url: github:dszakallas/bikeshed
     inputs:
       nixpkgs:
         follows: nixpkgs

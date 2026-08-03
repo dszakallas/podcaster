@@ -115,12 +115,8 @@ workflow:
         ref: "default"
     # Distribution targets for deploying completed podcasts. note: they run concurrently
     distribute:
-      # Deploy using Plex sync
-      - plex:
-          ref: my-media-server
-      # Deploy using Rsync/Rclone
-      - rsync:
-          ref: gdrive-backup
+      # Deploy using Rsync/Rclone target
+      - ref: gdrive-backup
 
 # Importers definition
 importers:
@@ -148,23 +144,10 @@ importers:
     scraper:
       ref: default
 
-# Distribution target definitions (rsync, rclone, plex)
-distributions:
-  gdrive-backup:
-    rsync: # rsync handles both RSync/Rclone
-      method: "rclone"
-      destination: "gdrive:podcasts"
-      flags: []
-  my-media-server:
+# Top-level notification target definitions (plex, discord)
+notifiers:
+  my-plex:
     plex:
-      # Optional rsync configuration to sync files to server before rescanning Plex library
-      # It makes sure stuff is awaited
-      rsync:
-        enable: true
-        # Reference to an rsync distribution key above
-        spec:
-          method: "rsync"
-          destination: "user@host:/mnt/podcasts"
       # Section ID of the target library in Plex
       section_id: 14
       # Library directory path on the Plex server
@@ -173,6 +156,20 @@ distributions:
       server_url: "http://localhost:32400"
       # Plex authentication token
       token: "your-plex-token"
+  my-discord:
+    discord:
+      webhook_url: "https://discord.com/api/webhooks/your-webhook-id/your-webhook-token"
+
+# Distribution target definitions (rsync, rclone)
+distributions:
+  gdrive-backup:
+    rsync: # rsync handles both RSync/Rclone
+      method: "rclone"
+      destination: "gdrive:podcasts"
+      flags: []
+    notifiers:
+      - ref: my-plex
+      - ref: my-discord
 
 
 # Google Cloud Platform configuration (required for cover generation and transcription)

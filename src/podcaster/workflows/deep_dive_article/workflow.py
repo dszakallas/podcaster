@@ -165,10 +165,11 @@ def _build_processed_file(notebook_id: str, t_state: TaskState) -> dict:
 
 
 def _distribution_target_params(target: DistributionRef) -> dict:
+    if target.ref:
+        return {"ref": target.ref}
     return {
-        "ref": target.ref,
-        "rsync": target.rsync,
-        "plex": target.plex,
+        "rsync": getattr(target, "rsync", None),
+        "notifiers": getattr(target, "notifiers", []),
     }
 
 

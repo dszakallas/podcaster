@@ -2,14 +2,14 @@
   pkgs,
   lib,
   inputs,
-  dotfiles-common,
+  bikeshed,
   ...
 }:
 {
   module =
     { config, ... }:
     let
-      lib' = dotfiles-common.lib;
+      lib' = bikeshed.lib;
       mcpServers = {
         playwright = {
           type = "stdio";
@@ -38,7 +38,7 @@
     in
     {
       imports = [
-        inputs.dotfiles-common.devenvModules.agents
+        inputs.bikeshed.devenvModules.agents
       ];
 
       agents = {
