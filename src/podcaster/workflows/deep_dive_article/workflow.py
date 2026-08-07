@@ -591,6 +591,11 @@ async def run(
         if generator_ref.length is not None
         else base_gen_config.length
     )
+    ignore_errors = (
+        generator_ref.ignore_errors
+        if generator_ref.ignore_errors is not None
+        else base_gen_config.ignore_errors
+    )
 
     if not length:
         length = gen_length
@@ -883,11 +888,17 @@ async def run(
             for task in tasks
         ]
         results = await asyncio.gather(*processing_coros, return_exceptions=True)
+        first_exception = None
         for res in results:
             if isinstance(res, Exception):
-                logger.warning(f"Audio task error: {res}")
+                if not first_exception:
+                    first_exception = res
+                logger.error(f"Audio task error: {res}")
             elif res:
                 processed_files.append(res)
+
+        if first_exception and not ignore_errors:
+            raise first_exception
 
     # Add already completed tasks from state to processed_files for reporting
     for t_state in state.tasks:

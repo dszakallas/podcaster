@@ -110,6 +110,7 @@ class PodcastGenerationConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     languages: List[str] = Field(default_factory=lambda: ["en"])
     length: Literal["short", "default", "long", "auto"] = "default"
+    ignore_errors: bool = False
 
 
 class PodcastTagsConfig(BaseModel):
