@@ -138,8 +138,23 @@ async def generate_tasks(
                     },
                 }
             except Exception as e:
-                logger.error(f"[{lang_code}] Generation failed: {e}")
-                raise
+                logger.error(
+                    f"[{lang_code}] Audio generation initialization failed: {e}"
+                )
+                yield {
+                    "notebook_id": notebook_id,
+                    "task_id": "",
+                    "status": "failed",
+                    "error": str(e),
+                    "metadata": {
+                        "generate-podcast": {
+                            "language": lang_code,
+                            "type": type_name,
+                            "length": length_str,
+                            "format_args": inputs.model_dump(),
+                        }
+                    },
+                }
 
 
 async def _poll_single_task(
@@ -156,13 +171,32 @@ async def _poll_single_task(
     k_denom = abs(300.0 - target_time)
     k = max(1.0, k_denom / log2_30)
 
+    max_timeout = max(1800.0, target_time * 2.5)  # Allow up to 30 mins for generation
+    consecutive_missing = 0
+    max_consecutive_missing = (
+        5  # Allow up to 5 consecutive polls where artifact is temporarily missing
+    )
     first_poll = True
+
     while True:
+        elapsed = time.monotonic() - start_time
+        if elapsed > max_timeout:
+            logger.warning(
+                f"[{lang_code}] Task {task_id} timed out after {elapsed:.1f}s"
+            )
+            return {
+                "status": "failed",
+                "notebook_id": notebook_id,
+                "artifact_id": task_id,
+                "error": f"Task {task_id} timed out after {elapsed:.1f} seconds",
+            }
+
         try:
             artifacts = await client.artifacts.list(notebook_id)
             artifact = next((a for a in (artifacts or []) if a.id == task_id), None)
 
             if artifact:
+                consecutive_missing = 0  # Reset missing counter
                 status_val = artifact.status
                 status_name = (
                     artifact.status.name.lower()
@@ -177,6 +211,7 @@ async def _poll_single_task(
 
                 if status_val == 3 or status_name == "completed":
                     return {
+                        "status": "completed",
                         "notebook_id": notebook_id,
                         "artifact_id": task_id,
                         "title": artifact.title,
@@ -186,15 +221,32 @@ async def _poll_single_task(
                             else None
                         ),
                     }
-                elif status_val == 4 or status_name in ("failed", "error", "unknown"):
-                    return None
+                elif status_val == 4 or status_name in ("failed", "error"):
+                    error_msg = (
+                        getattr(artifact, "error", None)
+                        or f"NotebookLM artifact status is '{status_name}' (val: {status_val})"
+                    )
+                    return {
+                        "status": "failed",
+                        "notebook_id": notebook_id,
+                        "artifact_id": task_id,
+                        "error": error_msg,
+                    }
+                # If status is in-progress (val 1, 2, "pending", "in_progress", etc.), continue loop
             else:
-                logger.debug(
-                    f"[{lang_code}] Task {task_id} not found in artifact list. Terminating."
+                consecutive_missing += 1
+                logger.warning(
+                    f"[{lang_code}] Task {task_id} not found in artifact list (attempt {consecutive_missing}/{max_consecutive_missing}). Retrying..."
                 )
-                return None
+                if consecutive_missing >= max_consecutive_missing:
+                    return {
+                        "status": "failed",
+                        "notebook_id": notebook_id,
+                        "artifact_id": task_id,
+                        "error": f"Artifact {task_id} not found in notebook artifact list after {max_consecutive_missing} attempts",
+                    }
         except Exception as e:
-            logger.debug(f"Polling error: {e}")
+            logger.warning(f"[{lang_code}] Polling error (will retry): {e}")
 
         if first_poll:
             logger.debug(f"[{lang_code}] Waiting 5 minutes before next poll...")
@@ -202,7 +254,6 @@ async def _poll_single_task(
             first_poll = False
             continue
 
-        elapsed = time.monotonic() - start_time
         interval = max(10.0, 10.0 * math.pow(2.0, abs(elapsed - target_time) / k))
         await asyncio.sleep(interval)
 
@@ -230,7 +281,7 @@ async def poll_tasks(tasks: AsyncGenerator[dict, None]) -> AsyncGenerator[dict, 
                 metadata = task.get("metadata", {}).copy()
                 metadata["poll-artifact-task"] = {
                     "task_id": task_id,
-                    "status": "completed",
+                    "status": res.get("status", "completed"),
                     "polled_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 }
                 res["metadata"] = metadata

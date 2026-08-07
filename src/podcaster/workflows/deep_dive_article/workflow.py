@@ -270,6 +270,13 @@ async def generate_download_and_tag_podcast(
     # Resolve state check
     t_state = _task_state_for(task_id, lang, state)
 
+    # Check if task generation itself failed prior to polling
+    if task_info.get("status") == "failed":
+        err = task_info.get("error", "Task generation failed to start")
+        logger.error(f"[{lang}] Task generation failed: {err}")
+        update_task_state("failed", error=err)
+        return None
+
     # Step 1: Poll
     completed_task = None
     if t_state and t_state.status in (
@@ -291,8 +298,17 @@ async def generate_download_and_tag_podcast(
             async for completed in audio_gen_core.poll_tasks(task_gen()):
                 completed_task = completed
                 break
-            if not completed_task:
-                raise RuntimeError(f"Task failed to complete: {task_id}")
+
+            if not completed_task or completed_task.get("status") == "failed":
+                err_msg = (
+                    completed_task.get("error")
+                    if completed_task
+                    else f"Task failed to complete: {task_id}"
+                )
+                logger.error(f"[{lang}] Audio task failed: {err_msg}")
+                update_task_state("failed", error=err_msg)
+                raise RuntimeError(err_msg)
+
             update_task_state("completed", title=completed_task.get("title"))
 
     # Step 2: Download
@@ -866,9 +882,12 @@ async def run(
             )
             for task in tasks
         ]
-        processed_files = list(
-            await asyncio.gather(*processing_coros, return_exceptions=False)
-        )
+        results = await asyncio.gather(*processing_coros, return_exceptions=True)
+        for res in results:
+            if isinstance(res, Exception):
+                logger.warning(f"Audio task error: {res}")
+            elif res:
+                processed_files.append(res)
 
     # Add already completed tasks from state to processed_files for reporting
     for t_state in state.tasks:
