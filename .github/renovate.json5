@@ -1,0 +1,34 @@
+{
+  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+  extends: [
+    "github>dszakallas/renovate-config//default.json5",
+    "docker:enableMajor",
+    ":automergeBranch",
+    ":skipStatusChecks",
+  ],
+
+  schedule: ["* 6-12 30 * *"],
+  timezone: "Europe/Prague",
+  labels: ["dep", "autofix"],
+
+  nix: {
+    enabled: true,
+  },
+  packageRules: [
+    {
+      description: ["Auto-merge patch updates"],
+      automerge: true,
+      matchUpdateTypes: ["patch"],
+      addLabels: ["automerge"],
+    },
+    {
+      description: ["Auto-merge GitHub Actions for minor and patch"],
+      matchManagers: ["github-actions"],
+      matchDatasources: ["github-tags"],
+      automerge: true,
+      automergeType: "branch",
+      matchUpdateTypes: ["minor", "patch"],
+      addLabels: ["automerge"],
+    },
+  ],
+}

@@ -1,7 +1,6 @@
 {
   name ? "podcaster",
   ai-sdk-anthropic,
-  antigravity-cli,
   bash,
   buildEnv,
   cacert,
@@ -19,13 +18,11 @@
   runCommand,
   withAgents ? [
     "opencode"
-    "antigravity-cli"
   ],
 }:
 let
   hasAgents = withAgents != null && (lib.length withAgents > 0);
   hasOpencode = withAgents != null && (lib.elem "opencode" withAgents);
-  hasAntigravity = withAgents != null && (lib.elem "antigravity-cli" withAgents);
 
   playwright-browsers = playwright-driver.selectBrowsers {
     withWebkit = !hasAgents;
@@ -46,25 +43,11 @@ let
     cp ${opencodeConfig} $out/etc/opencode.json
   '';
 
-  antigravityConfig = replaceVars ./antigravity.json {
-    playwrightMcpPath = "${playwright-mcp}/bin/playwright-mcp";
-    playwrightBrowsersPath = "${playwright-browsers}";
-  };
-
-  antigravityConfigDir = runCommand "antigravity-config-dir" { } ''
-    mkdir -p $out/workspace/.gemini/config
-    cp ${antigravityConfig} $out/workspace/.gemini/config/mcp_config.json
-  '';
-
   agentPaths =
     lib.optionals hasAgents [ playwright-mcp ]
     ++ lib.optionals hasOpencode [
       opencode
       opencodeConfigDir
-    ]
-    ++ lib.optionals hasAntigravity [
-      antigravity-cli
-      antigravityConfigDir
     ];
 
   agentEnvs = lib.optionals hasOpencode [ "OPENCODE_CONFIG=/etc/opencode.json" ];

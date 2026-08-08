@@ -60,14 +60,6 @@
           inherit pyproject-nix uv2nix pyproject-build-systems;
         };
 
-        dockerImageWithAntigravityCli = pkgs.callPackage ./nix/podcaster-docker {
-          inherit podcaster ai-sdk-anthropic;
-          name = "podcaster-antigravity-cli";
-          withAgents = [
-            "antigravity-cli"
-          ];
-        };
-
         dockerImageWithOpenCode = pkgs.callPackage ./nix/podcaster-docker {
           inherit podcaster ai-sdk-anthropic opencode;
           name = "podcaster-opencode";
@@ -91,7 +83,6 @@
         dockerImages = {
           default = dockerImage;
           podcaster = dockerImage;
-          podcaster-antigravity-cli = dockerImageWithAntigravityCli;
           podcaster-opencode = dockerImageWithOpenCode;
         };
       }
