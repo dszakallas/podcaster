@@ -250,17 +250,6 @@ prek run --all-files
 
 The hooks are configured in `devenv.nix` and run automatically on `git commit`.
 
-## Architecture
-
-- **`src/podcaster/workflows/`**: High-level orchestrations (e.g., `deep_dive_article`).
-- **`src/podcaster/config.py`**: Pydantic schema for `podcaster.yaml`.
-- **`src/podcaster/audio_gen/core.py`**: Streaming generators for NotebookLM artifact interaction.
-- **`src/podcaster/cli.py`**: Command-line interface bridging to the generators.
-- **`src/podcaster/notifier/`**: Notification mechanisms (Plex, Discord).
-- **`src/podcaster/distribution/`**: Distribution mechanisms (Rsync, Rclone).
-- **`src/podcaster/tagging.py`**: Comprehensive audio metadata (ID3/MP4/OGG) management.
-- **`src/podcaster/utils.py`**: Shared folder management and sanitization.
-
 ## License
 
 MIT
