@@ -22,7 +22,7 @@ class Distribution(ABC):
     async def _distribute(
         self,
         notebook_id: str,
-        podcast_dir: Optional[str] = None,
+        podcast_dir: str,
     ) -> dict:
         """Executes the specific distribution operation for a given notebook."""
         ...
@@ -30,7 +30,7 @@ class Distribution(ABC):
     async def distribute(
         self,
         notebook_id: str,
-        podcast_dir: Optional[str] = None,
+        podcast_dir: str,
     ) -> dict:
         """Executes the distribution operation and runs attached notifiers concurrently."""
         result = await self._distribute(notebook_id, podcast_dir=podcast_dir)
@@ -69,31 +69,12 @@ def build_distribution(
     """Constructs a concrete Distribution (e.g. RsyncDistribution)
     from a resolved DistributionConfig.
     """
-    from ..utils import load_config
     from .rsync import RsyncDistribution
 
-    app_cfg = None
-    try:
-        app_cfg = load_config()
-    except Exception:
-        pass
-
-    if not name and app_cfg:
-        name = next(
-            (k for k, v in app_cfg.distributions.items() if v is dist_cfg),
-            None,
-        )
-
-    built_notifiers = []
-    for n in dist_cfg.notifiers:
-        if isinstance(n, NotifierConfig):
-            notifier_name = None
-            if app_cfg:
-                notifier_name = next(
-                    (k for k, v in app_cfg.notifiers.items() if v is n),
-                    None,
-                )
-            built_notifiers.append(build_notifier(n, name=notifier_name))
+    name = name or getattr(dist_cfg, "_ref_name", None)
+    built_notifiers = [
+        build_notifier(n) for n in dist_cfg.notifiers if isinstance(n, NotifierConfig)
+    ]
 
     if dist_cfg.rsync is not None:
         return RsyncDistribution(
@@ -112,7 +93,7 @@ def build_distribution(
 async def execute_distribution(
     dist_input: DistributionConfig,
     notebook_id: str,
-    podcast_dir: Optional[str] = None,
+    podcast_dir: str,
 ) -> dict:
     """Executes a distribution for a given notebook."""
     dist_obj = build_distribution(dist_input)

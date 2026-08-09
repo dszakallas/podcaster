@@ -12,7 +12,6 @@ from .models import CoverTask, TaskStatus
 from .utils import (
     get_notebooklm_client,
     get_or_create_notebook_dir,
-    load_config,
     retry_rpc,
 )
 
@@ -105,11 +104,8 @@ async def poll_cover_jobs(
 
 
 async def download_cover_jobs(
-    tasks: AsyncIterable[CoverTask], podcast_dir: Optional[str] = None
+    tasks: AsyncIterable[CoverTask], podcast_dir: str
 ) -> AsyncGenerator[CoverTask, None]:
-    config = load_config()
-    if not podcast_dir:
-        podcast_dir = config.podcast_dir
 
     genai_client = genai.Client()
 
@@ -173,7 +169,7 @@ async def download_cover_jobs(
 
 async def generate_cover_for_notebook(
     notebook_id: str,
-    podcast_dir: Optional[str] = None,
+    podcast_dir: str,
     task_id: Optional[str] = None,
     image_gen_prompt: Optional[str] = None,
     on_start_callback: Optional[Callable[[str, str], Any]] = None,

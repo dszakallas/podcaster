@@ -87,14 +87,14 @@ workflow:
     enrich_web:
       enable: true
       retry_count: 0
-      fallback_mechanism: "ignore"
       spec:
-        # Maximum number of imported web articles/references
-        max_imports: 5
         # Mode of enrichment: "fast" or "deep"
         mode: "fast"
-        # If true, skips importing individual articles that fail instead of failing the whole task
-        ignore_errors: false
+        # Reference to an importer or inline importer config for failed research imports
+        fallback_importer:
+          ref: "scraper"
+        # Optional maximum allowed import failures during research (default: null tolerates any failure count)
+        # max_import_failures: 2
     # Podcast album cover art generation options
     generate_cover:
       enable: true

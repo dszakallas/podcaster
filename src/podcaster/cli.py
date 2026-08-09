@@ -171,14 +171,16 @@ async def podcast_create(
     dry_run,
 ):
     """Generate podcasts using NotebookLM. Outputs task JSON."""
-    return audio_gen_core.generate_tasks(
+    config = load_config()
+    gen_cfg = config.podcast_generators.get(generator_key)
+    return audio_gen_core.create_podcast_audio_jobs(
         notebook_id,
         type,
         list(language) if language else [],
         length,
         format_args_json,
         dry_run,
-        generator_key=generator_key,
+        generator_config=gen_cfg,
     )
 
 
@@ -202,6 +204,8 @@ async def podcast_poll(arg_json):
 @async_command(stream=True)
 async def podcast_download(podcast_dir, arg_json):
     """Download podcast artifacts. Accepts input from --arg-json or stdin."""
+    config = load_config()
+    podcast_dir = podcast_dir or config.podcast_dir
     return audio_gen_core.download_artifacts(
         parse_input_stream(arg_json, model_cls=PodcastGenTask), podcast_dir
     )
@@ -241,6 +245,8 @@ async def cover_poll(arg_json):
 @async_command(stream=True)
 async def cover_download(podcast_dir, arg_json):
     """Download cover generation results. Accepts input from --arg-json or stdin."""
+    config = load_config()
+    podcast_dir = podcast_dir or config.podcast_dir
     return cover.download_cover_jobs(
         parse_input_stream(arg_json, model_cls=CoverTask), podcast_dir
     )
@@ -266,9 +272,12 @@ def transcription_group():
 @async_command(stream=True)
 async def transcription_create(arg_json, transcriber_key):
     """Start transcription tasks for podcast artifacts. Accepts input from --arg-json or stdin."""
+    config = load_config()
+    trans_cfg = config.podcast_transcribers.get(transcriber_key)
     return transcription.create_transcription_jobs(
         parse_input_stream(arg_json, model_cls=PodcastGenArtifact),
-        transcriber_key=transcriber_key,
+        transcription_config=trans_cfg,
+        gcp_config=config.gcp,
     )
 
 
@@ -367,8 +376,15 @@ def list_podcasts(podcast_dir):
 @async_command()
 async def import_web(notebook_id, url, importer, title):
     """Import a web URL as a source to a notebook."""
-    return await research.import_source(
-        notebook_id, url, importer=importer, title=title
+    config = load_config()
+    importer_cfg = config.importers.get(importer)
+    if not importer_cfg:
+        raise ValueError(f"Importer '{importer}' not found in configuration.")
+    return await research.execute_importer(
+        importer=importer_cfg,
+        notebook_id=notebook_id,
+        source=url,
+        title=title,
     )
 
 
@@ -390,8 +406,16 @@ async def import_drive(notebook_id, url_or_id, title, importer):
     else:
         url = url_or_id
 
-    return await research.import_source(
-        notebook_id, url, importer=importer, title=title
+    config = load_config()
+    importer_cfg = config.importers.get(importer)
+    if not importer_cfg:
+        raise ValueError(f"Importer '{importer}' not found in configuration.")
+
+    return await research.execute_importer(
+        importer=importer_cfg,
+        notebook_id=notebook_id,
+        source=url,
+        title=title,
     )
 
 
@@ -406,7 +430,11 @@ async def import_drive(notebook_id, url_or_id, title, importer):
 @async_command()
 async def scrape(target, dry_run):
     """Scrape a target URL and output the result with metadata on a single NDJSON line."""
-    return await research.scrape(target, dry_run=dry_run)
+    config = load_config()
+    scraper_cfg = config.scrapers.get("default")
+    return await research.scrape_source(
+        target, dry_run=dry_run, scraper_config=scraper_cfg
+    )
 
 
 @cli.group(name="research")
@@ -433,21 +461,33 @@ async def research_create(notebook_id, source_id, mode):
 
 
 @research_group.command(name="poll")
-@click.option("--max-imports", type=int, help="Maximum number of sources to import")
 @click.option("--arg-json", multiple=True, help="JSON task object(s) to poll.")
 @click.option(
-    "--fallback-mechanism",
-    default="ignore",
-    help="Importer to use on failure or 'ignore' (default: ignore)",
+    "--fallback-importer",
+    help="Importer preset name to use on failure",
+)
+@click.option(
+    "--max-import-failures",
+    type=int,
+    help="Maximum allowed import failures before failing the research job",
 )
 @verbose_option
 @async_command(stream=True)
-async def research_poll(max_imports, arg_json, fallback_mechanism):
+async def research_poll(arg_json, fallback_importer, max_import_failures):
     """Poll research tasks and import sources. Accepts input from --arg-json or stdin."""
+    config = load_config()
+    fallback_cfg = None
+    if fallback_importer:
+        if fallback_importer in config.importers:
+            fallback_cfg = config.importers[fallback_importer]
+        else:
+            raise ValueError(
+                f"Importer '{fallback_importer}' not found in configuration."
+            )
     return research.poll_research_jobs(
         parse_input_stream(arg_json, model_cls=ResearchTask),
-        max_imports,
-        fallback_mechanism=fallback_mechanism,
+        fallback_importer=fallback_cfg,
+        max_import_failures=max_import_failures,
     )
 
 
@@ -482,6 +522,7 @@ async def distribute(
     from .distribution import build_distribution
 
     config = load_config()
+    podcast_dir = podcast_dir or config.podcast_dir
 
     if preset not in config.distributions:
         raise ValueError(f"Distribution preset '{preset}' not found in configuration.")
@@ -505,10 +546,20 @@ async def distribute(
     "--podcast-dir", help="Root podcast directory (default from config or podcasts)"
 )
 @click.option("--from-source", help="Source file or URL to upload as the first source")
+@click.option(
+    "--importer",
+    default="default",
+    help="Importer to use for --from-source",
+)
 @verbose_option
 @async_command()
-async def init_podcast_notebook(title, notebook_id, podcast_dir, from_source):
+async def init_podcast_notebook(title, notebook_id, podcast_dir, from_source, importer):
     """Create a new notebook or initialize an existing one locally."""
+    config = load_config()
+    podcast_dir = podcast_dir or config.podcast_dir
+    importer_cfg = config.importers.get(importer)
+    if not importer_cfg:
+        raise ValueError(f"Importer '{importer}' not found in configuration.")
     if from_source and notebook_id:
         raise ValueError("Cannot provide notebook-id when initializing from source.")
     if not from_source and not title and not notebook_id:
@@ -517,9 +568,10 @@ async def init_podcast_notebook(title, notebook_id, podcast_dir, from_source):
         )
 
     return await notebook.init_notebook(
+        podcast_dir=podcast_dir,
+        importer=importer_cfg,
         title=title,
         notebook_id=notebook_id,
-        podcast_dir=podcast_dir,
         from_source=from_source,
     )
 
@@ -585,6 +637,7 @@ async def run_workflow(
         raise ValueError("Must provide source_file when starting a new workflow run.")
 
     config = load_config()
+    podcast_dir = podcast_dir or config.podcast_dir
 
     wf_config = config.workflow.root.get(preset)
     if not wf_config:
@@ -593,6 +646,7 @@ async def run_workflow(
     from .workflows.deep_dive_article import workflow as dd_wf
 
     return await dd_wf.run(
+        wf_config=wf_config,
         preset_name=preset,
         title=title,
         source_file=source_file,
@@ -616,6 +670,8 @@ async def run_workflow(
 @async_command()
 async def resume_workflow(notebook_id, podcast_dir):
     """Resume a failed or interrupted workflow run from the state file."""
+    config = load_config()
+    podcast_dir = podcast_dir or config.podcast_dir
     from .workflows.deep_dive_article import workflow as dd_wf
     from .workflows.deep_dive_article.state import WorkflowState
 
@@ -626,7 +682,12 @@ async def resume_workflow(notebook_id, podcast_dir):
             f"No state.json found for notebook ID {notebook_id} in {notebook_dir_path}"
         )
 
+    wf_config = config.workflow.root.get(state.preset)
+    if not wf_config:
+        raise ValueError(f"Workflow preset '{state.preset}' not found in config.")
+
     return await dd_wf.run(
+        wf_config=wf_config,
         preset_name=state.preset,
         notebook_id=notebook_id,
         podcast_dir=str(notebook_dir_path.parent),
@@ -642,6 +703,8 @@ async def resume_workflow(notebook_id, podcast_dir):
 @verbose_option
 def workflow_edit(notebook_id, podcast_dir):
     """Open the workflow state file in EDITOR for editing."""
+    config = load_config()
+    podcast_dir = podcast_dir or config.podcast_dir
     try:
         notebook_dir_path = resolve_notebook_dir_path(notebook_id, podcast_dir)
         state_file = notebook_dir_path / "state.json"

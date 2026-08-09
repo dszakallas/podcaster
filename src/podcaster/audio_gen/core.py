@@ -10,12 +10,12 @@ from typing import AsyncGenerator, AsyncIterable, Optional, Union
 from notebooklm.exceptions import NotebookNotFoundError
 from notebooklm.rpc import AudioLength
 
+from ..config import MaybeRef, PodcastGenerationConfig
 from ..models import PodcastGenArtifact, PodcastGenTask, TaskStatus
 from ..utils import (
     RetryingNotebookLMClient,
     get_notebooklm_client,
     get_or_create_notebook_dir,
-    load_config,
     parse_duration_minutes,
     resolve_duration,
     sanitize,
@@ -66,27 +66,16 @@ def load_plugin(type_name: str):
         )
 
 
-async def generate_tasks(
+async def create_podcast_audio_jobs(
     notebook_id: str,
     type_name: str,
     languages: list[str],
     length_str: Optional[str],
     format_args_json: str,
     dry_run: bool = False,
-    generator_key: str = "default",
+    generator_config: Optional[MaybeRef[PodcastGenerationConfig]] = None,
 ) -> AsyncGenerator[PodcastGenTask, None]:
-    config = load_config()
-    from ..config import PodcastGenerationConfig
-
-    if generator_key not in config.podcast_generators:
-        logger.warning(
-            f"Podcast generator '{generator_key}' not found in configuration. Using default."
-        )
-        gen_defaults = config.podcast_generators.get(
-            "default", PodcastGenerationConfig()
-        )
-    else:
-        gen_defaults = config.podcast_generators[generator_key]
+    gen_defaults = generator_config or PodcastGenerationConfig()
 
     if not languages:
         languages = gen_defaults.languages
@@ -94,7 +83,7 @@ async def generate_tasks(
     if not length_str:
         length_str = gen_defaults.length
 
-    length_str = resolve_duration(length_str)
+    length_str = resolve_duration(length_str or "default")
 
     plugin = load_plugin(type_name)
     inputs = plugin.Inputs.model_validate_json(format_args_json or "{}")
@@ -313,12 +302,8 @@ async def poll_tasks(
 
 async def download_artifacts(
     artifacts: AsyncIterable[Union[PodcastGenTask, PodcastGenArtifact]],
-    podcast_dir: Optional[str] = None,
+    podcast_dir: str,
 ) -> AsyncGenerator[PodcastGenArtifact, None]:
-    config = load_config()
-    if not podcast_dir:
-        podcast_dir = config.podcast_dir
-
     os.makedirs(podcast_dir, exist_ok=True)
 
     async with get_notebooklm_client() as client:

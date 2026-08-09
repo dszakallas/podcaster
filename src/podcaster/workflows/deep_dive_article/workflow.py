@@ -8,7 +8,14 @@ from typing import Any, AsyncGenerator, Awaitable, Optional, Union
 from podcaster import cover, research, tagging, transcription
 from podcaster import notebook as notebook_mod
 from podcaster.audio_gen import core as audio_gen_core
-from podcaster.config import PodcastTagsConfig, TaggingConfig
+from podcaster.config import (
+    DeepDiveArticleConfig,
+    ImporterConfig,
+    MaybeRef,
+    PodcastTagsConfig,
+    PodcastTranscriptionConfig,
+    TaggingConfig,
+)
 from podcaster.models import (
     PodcastGenArtifact,
     PodcastGenTask,
@@ -16,9 +23,7 @@ from podcaster.models import (
     TranscriptionTask,
 )
 from podcaster.utils import (
-    DEFAULT_PODCAST_DIR,
     find_notebook_dir,
-    load_config,
     log_task,
     parse_duration_minutes,
     resolve_duration,
@@ -57,11 +62,7 @@ def _build_completed_task(
     )
 
 
-def _resolve_date_from_dir(
-    podcast_dir: Optional[str], notebook_id: str
-) -> Optional[str]:
-    if not podcast_dir:
-        return None
+def _resolve_date_from_dir(podcast_dir: str, notebook_id: str) -> Optional[str]:
     notebook_dir_name = find_notebook_dir(podcast_dir, notebook_id)
     if notebook_dir_name:
         import re
@@ -185,7 +186,7 @@ def _build_processed_file(notebook_id: str, t_state: TaskState) -> PodcastGenArt
 async def _run_distribution_target(
     target,
     notebook_id: str,
-    podcast_dir: Optional[str],
+    podcast_dir: str,
 ):
     from ...distribution import build_distribution
 
@@ -208,8 +209,8 @@ async def _run_distribution_target(
 async def upload_and_wait_source(
     notebook_id: str,
     source_file: str,
+    importer: MaybeRef[ImporterConfig],
     title: Optional[str] = None,
-    importer: Any = "default",
 ) -> str:
     """Uploads a source file or URL and waits for processing."""
     return await notebook_mod.upload_source(
@@ -222,13 +223,13 @@ async def generate_download_and_tag_podcast(
     notebook_id: str,
     task_info: PodcastGenTask,
     cover_image: Optional[Union[str, asyncio.Task, None]],
+    podcast_dir: str,
     state: Optional[WorkflowState] = None,
     notebook_dir: Optional[Path] = None,
-    podcast_dir: Optional[str] = None,
     transcribe: bool = False,
     transcription_languages: Optional[list[str]] = None,
     transcribe_retry_count: int = 0,
-    transcriber_key: str = "default",
+    transcription_config: Optional[MaybeRef[PodcastTranscriptionConfig]] = None,
     tagging_config: Optional[TaggingConfig] = None,
 ):
     """Polls, downloads, and tags a specific generation task once complete."""
@@ -467,7 +468,7 @@ async def generate_download_and_tag_podcast(
                                         job
                                     ) in transcription.create_transcription_jobs(
                                         _single_artifact_stream(tagged),
-                                        transcriber_key=transcriber_key,
+                                        transcription_config=transcription_config,
                                     ):
                                         current_t = _task_state_for(
                                             task_id, lang, state
@@ -549,7 +550,8 @@ async def generate_download_and_tag_podcast(
 
 @task("workflow_run", logger)
 async def run(
-    preset_name: str,
+    wf_config: DeepDiveArticleConfig,
+    preset_name: str = "default",
     title: Optional[str] = None,
     source_file: Optional[str] = None,
     notebook_id: Optional[str] = None,
@@ -558,7 +560,7 @@ async def run(
     enrich_web: Optional[bool] = None,
     generate_cover: Optional[bool] = None,
     transcribe: Optional[bool] = None,
-    podcast_dir: Optional[str] = None,
+    podcast_dir: str = "podcasts",
     resume: bool = False,
 ):
     if resume:
@@ -577,12 +579,6 @@ async def run(
             raise ValueError(
                 "Must provide source_file when starting a new workflow run."
             )
-
-    config = load_config()
-
-    # 1. Resolve podcast directory
-    if not podcast_dir:
-        podcast_dir = config.podcast_dir or DEFAULT_PODCAST_DIR
 
     state = None
     notebook_dir_path = None
@@ -615,13 +611,6 @@ async def run(
             f"Resuming workflow for notebook: {notebook_id} using preset: {preset_name}"
         )
 
-    wf_config = config.workflow.root.get(preset_name)
-    if not wf_config:
-        raise ValueError(f"Workflow preset '{preset_name}' not found.")
-
-    if wf_config.type != "deep_dive_article":
-        raise ValueError(f"Unsupported workflow type: {wf_config.type}")
-
     enrich_config = wf_config.enrich_web
 
     # Resolve defaults from the specific preset
@@ -632,20 +621,11 @@ async def run(
     if transcribe is None:
         transcribe = wf_config.transcribe.enable
 
-    # Resolve podcast transcriber settings (already resolved by load_config)
+    # Resolve podcast transcriber and generator settings
     transcriber_config = wf_config.transcribe.podcast_transcriber
-    transcriber_name = next(
-        (k for k, v in config.podcast_transcribers.items() if v is transcriber_config),
-        "default",
-    )
     transcription_langs = transcriber_config.languages
 
-    # Resolve podcast generator settings (already resolved by load_config)
     generator_config = wf_config.podcast_generator
-    generator_name = next(
-        (k for k, v in config.podcast_generators.items() if v is generator_config),
-        "default",
-    )
     gen_languages = generator_config.languages
     gen_length = generator_config.length
     ignore_errors = generator_config.ignore_errors
@@ -669,16 +649,11 @@ async def run(
     if resume:
         logger.info(f"Resuming existing notebook: {notebook_id}")
     else:
-        importer_cfg = wf_config.importer
-        importer_name = next(
-            (k for k, v in config.importers.items() if v is importer_cfg),
-            "default",
-        )
         notebook_info = await notebook_mod.init_notebook(
-            title=title,
             podcast_dir=podcast_dir,
+            importer=wf_config.importer,
+            title=title,
             from_source=source_file,
-            importer=importer_name,
         )
         notebook_id = str(notebook_info["notebook_id"])
         derived_title = str(notebook_info.get("derived_title") or "")
@@ -827,9 +802,6 @@ async def run(
 
     research_res = None
     if enrichment_needed:
-        max_imports = enrich_config.spec.max_imports if enrich_web else 0
-        if max_imports == -1:
-            max_imports = None
         mode = enrich_config.spec.mode
 
         task_id_val = state.enrichment[-1].task_id if state.enrichment else None
@@ -839,36 +811,25 @@ async def run(
             state.enrichment[-1].suggested_length if state.enrichment else None
         )
 
-        fallback_mech = enrich_config.fallback_mechanism
-        if isinstance(fallback_mech, str):
-            fallback_str = fallback_mech
-        else:
-            # fallback_mech is a resolved ImporterConfig
-            fallback_str = next(
-                (k for k, v in config.importers.items() if v is fallback_mech),
-                "default",
-            )
-
         async with log_task(
             "enrich_source_task",
             logger,
             notebook_id=notebook_id,
             source_id=source_id,
             mode=mode,
-            max_imports=max_imports,
         ):
             assert source_id is not None
             research_res = await research.research_from_source(
                 notebook_id,
                 source_id,
                 mode=mode,
-                max_imports=max_imports,
                 task_id=task_id_val,
                 topic=topic_val,
                 summary=summary_val,
                 suggested_duration=suggested_len_val,
                 on_start_callback=on_enrich_start,
-                fallback_mechanism=fallback_str,
+                fallback_importer=enrich_config.spec.fallback_importer,
+                max_import_failures=enrich_config.spec.max_import_failures,
             )
             if state.enrichment:
                 state.enrichment[-1].status = TaskStatus.COMPLETED
@@ -940,14 +901,14 @@ async def run(
             languages=languages_to_generate,
             length=length,
         ):
-            async for task in audio_gen_core.generate_tasks(
+            async for task in audio_gen_core.create_podcast_audio_jobs(
                 notebook_id,
                 "main-article-with-author",
                 languages_to_generate,
                 length or "20 minutes",
                 json.dumps(format_args),
                 dry_run=False,
-                generator_key=generator_name,
+                generator_config=generator_config,
             ):
                 tasks.append(task)
                 _append_generated_state(state, task)
@@ -964,13 +925,13 @@ async def run(
                 notebook_id,
                 task,
                 cover_arg,
+                podcast_dir,
                 state=state,
                 notebook_dir=notebook_dir_path,
-                podcast_dir=podcast_dir,
                 transcribe=transcribe,
                 transcription_languages=transcription_langs,
                 transcribe_retry_count=transcribe_retry_count,
-                transcriber_key=transcriber_name,
+                transcription_config=transcriber_config,
                 tagging_config=wf_config.tagging,
             )
             for task in tasks

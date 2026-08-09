@@ -4,10 +4,10 @@ from typing import Optional
 
 from notebooklm.exceptions import NotebookNotFoundError
 
+from .config import ImporterConfig, MaybeRef
 from .utils import (
     get_notebooklm_client,
     get_or_create_notebook_dir,
-    load_config,
 )
 
 logger = logging.getLogger(__name__)
@@ -22,8 +22,8 @@ TITLE_SUGGESTION_PROMPT = (
 async def upload_source(
     notebook_id: str,
     source_file: str,
+    importer: MaybeRef[ImporterConfig],
     title: Optional[str] = None,
-    importer: str = "default",
 ) -> str:
     """Uploads a source file or URL and waits for processing."""
     from . import research
@@ -42,11 +42,11 @@ async def upload_source(
 
 
 async def init_notebook(
+    podcast_dir: str,
+    importer: MaybeRef[ImporterConfig],
     title: Optional[str] = None,
     notebook_id: Optional[str] = None,
-    podcast_dir: Optional[str] = None,
     from_source: Optional[str] = None,
-    importer: str = "default",
 ) -> dict:
     """Initialize a notebook: creates/fetches a notebook and initializes its local directory.
 
@@ -54,9 +54,6 @@ async def init_notebook(
     directory, deriving the title after successful upload. If upload fails, the remote notebook
     is cleaned up (deleted) and an error is raised.
     """
-    config = load_config()
-    if not podcast_dir:
-        podcast_dir = config.podcast_dir
 
     if from_source:
         async with get_notebooklm_client() as client:

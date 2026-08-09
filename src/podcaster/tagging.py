@@ -26,7 +26,6 @@ from mutagen.oggvorbis import OggVorbis
 
 from .config import PodcastTagsConfig
 from .models import PodcastGenArtifact
-from .utils import load_config
 
 logger = logging.getLogger(__name__)
 
@@ -260,8 +259,7 @@ async def tag_artifacts(
     created_at: Optional[str] = None,
     tags_config: Optional[PodcastTagsConfig] = None,
 ) -> AsyncGenerator[PodcastGenArtifact, None]:
-    config = load_config()
-    base_cfg = tags_config or config.podcast_tags.get("default") or PodcastTagsConfig()
+    base_cfg = tags_config or PodcastTagsConfig()
 
     default_album_artist = base_cfg.album_artist
     default_artists = base_cfg.artists

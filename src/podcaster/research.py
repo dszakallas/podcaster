@@ -2,19 +2,17 @@ import asyncio
 import json
 import logging
 import os
-import random
 import re
 import tempfile
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, AsyncGenerator, AsyncIterable, Callable, List, Optional, Union
+from typing import Any, AsyncGenerator, AsyncIterable, Callable, List, Optional
 
-from .config import ImporterConfig
+from .config import ImporterConfig, MaybeRef, ScraperConfig
 from .models import ResearchResult, ResearchTask, TaskStatus
 from .utils import (
     RetryingNotebookLMClient,
     get_notebooklm_client,
-    load_config,
     parse_duration_minutes,
     sanitize,
 )
@@ -244,22 +242,18 @@ def build_importer(importer_cfg: ImporterConfig) -> Importer:
 
 
 async def execute_importer(
-    importer_input: Any = None,
+    importer: MaybeRef[ImporterConfig],
     notebook_id: str = "",
     source: str = "",
     title: Optional[str] = None,
     client: Optional[RetryingNotebookLMClient] = None,
 ) -> dict:
     """Executes an importer on a source string using the Importer interface."""
-    config = load_config()
-    if isinstance(importer_input, ImporterConfig):
-        importer_cfg = importer_input
-    else:
-        name = str(importer_input or "default")
-        if name not in config.importers:
-            raise ValueError(f"Importer '{name}' not found in configuration.")
-        importer_cfg = config.importers[name]
-    importer_obj = build_importer(importer_cfg)
+    if not isinstance(importer, ImporterConfig):
+        raise ValueError(
+            f"A resolved ImporterConfig must be provided to execute_importer, got: {type(importer)}"
+        )
+    importer_obj = build_importer(importer)
     return await importer_obj.execute(notebook_id, source, title=title, client=client)
 
 
@@ -269,31 +263,17 @@ async def scrape_source(
     command: Optional[str] = None,
     args: Optional[List[str]] = None,
     dry_run: bool = False,
+    scraper_config: Optional[ScraperConfig] = None,
 ) -> Optional[dict]:
     """Scrapes a URL and returns the parsed agent metadata and content dictionary."""
     from jinja2 import Template
 
-    config = load_config()
-
-    if tool is None or command is None:
-        scraper_def = None
-        if "default" in config.scrapers:
-            scraper_def = config.scrapers["default"]
-        elif config.scrapers:
-            scraper_def = next(iter(config.scrapers.values()))
-
-        if tool is None and scraper_def:
-            tool = scraper_def.tool
-
-        if command is None and scraper_def and scraper_def.agent:
-            ag = scraper_def.agent
-            if ag.ref and ag.ref in config.agents:
-                agent_def = config.agents[ag.ref]
-                command = agent_def.command
-                args = agent_def.args
-            elif ag.command:
-                command = ag.command
-                args = ag.args or []
+    if scraper_config:
+        tool = tool or scraper_config.tool
+        if scraper_config.agent:
+            ag = scraper_config.agent
+            command = command or ag.command
+            args = args or ag.args or []
 
     if tool is None:
         tool = DEFAULT_SCRAPER_TOOL
@@ -508,42 +488,7 @@ async def _import_scraper(
     ):
         raise ValueError(f"Scraper handler only supports web URLs, got: {source}")
 
-    tool = None
-    command = None
-    args = None
-    config = load_config()
-
-    if scraper_config:
-        scraper_def = None
-        # scraper_config is a resolved ScraperConfig
-        scraper_def = scraper_config
-
-        if scraper_def:
-            tool = scraper_def.tool
-            if scraper_def.agent:
-                ag = scraper_def.agent
-                if ag.ref and ag.ref in config.agents:
-                    agent_def = config.agents[ag.ref]
-                    command = agent_def.command
-                    args = agent_def.args
-                elif ag.command:
-                    command = ag.command
-                    args = ag.args or []
-
-        if scraper_config.tool:
-            tool = scraper_config.tool
-
-        ag_inline = scraper_config.agent
-        if ag_inline:
-            if ag_inline.ref and ag_inline.ref in config.agents:
-                agent_def = config.agents[ag_inline.ref]
-                command = agent_def.command
-                args = agent_def.args
-            elif ag_inline.command:
-                command = ag_inline.command
-                args = ag_inline.args or []
-
-    res = await scrape_source(source, tool=tool, command=command, args=args)
+    res = await scrape_source(source, scraper_config=scraper_config)
     if not res or not res.get("content"):
         error_msg = res.get("error") if res else "No response"
         raise RuntimeError(f"Scraping returned no content: {error_msg}")
@@ -577,7 +522,7 @@ async def _import_scraper(
 async def import_source(
     notebook_id: str,
     source: str,
-    importer: Optional[Union[str, Any]] = "default",
+    importer: MaybeRef[ImporterConfig],
     title: Optional[str] = None,
     client: Optional[RetryingNotebookLMClient] = None,
 ) -> dict:
@@ -598,8 +543,8 @@ async def import_source(
 async def import_web_source(
     notebook_id: str,
     url: str,
+    importer: MaybeRef[ImporterConfig],
     title: Optional[str] = None,
-    importer: str = "default",
 ) -> dict:
     """Delegates to import_source for generalized importing with fallback."""
     return await import_source(notebook_id, url, importer=importer, title=title)
@@ -680,8 +625,8 @@ async def create_research_job(
 
 async def poll_research_jobs(
     tasks: AsyncIterable[ResearchTask],
-    max_imports: Optional[int] = None,
-    fallback_mechanism: str = "ignore",
+    fallback_importer: Optional[MaybeRef[ImporterConfig]] = None,
+    max_import_failures: Optional[int] = None,
 ) -> AsyncGenerator[ResearchResult, None]:
     async with get_notebooklm_client() as raw_client:
         client: Any = raw_client
@@ -724,81 +669,91 @@ async def poll_research_jobs(
 
             # 6. Select sources to import
             sources_to_import = found_sources
-            if max_imports is not None and len(found_sources) > max_imports:
-                sources_to_import = random.sample(found_sources, max_imports)
-                logger.debug(
-                    f"Randomly selected {len(sources_to_import)} sources to import."
-                )
 
             # 7. Import sources
             imported = []
+            failed_imports_count = 0
             if sources_to_import:
                 logger.debug(f"Importing {len(sources_to_import)} sources...")
                 for src in sources_to_import:
                     src_url = str(
                         src.get("url") if isinstance(src, dict) else src or ""
                     )
+                    import_success = False
                     try:
                         single_imported: Any = await client.research.import_sources(
                             notebook_id, task_id, [src]
                         )
-                        if isinstance(single_imported, list):
+                        if isinstance(single_imported, list) and single_imported:
                             imported.extend(single_imported)
+                            import_success = True
                         elif single_imported:
                             imported.append(single_imported)
+                            import_success = True
                     except Exception as e:
                         logger.warning(
                             f"NotebookLM import failed for research source '{src_url}': {e}"
                         )
-                        if fallback_mechanism != "ignore":
-                            try:
-                                imp_res = await import_source(
-                                    notebook_id,
-                                    src_url,
-                                    importer=fallback_mechanism,
-                                    client=client,
+
+                    if not import_success and fallback_importer is not None:
+                        try:
+                            imp_res = await import_source(
+                                notebook_id,
+                                src_url,
+                                importer=fallback_importer,
+                                client=client,
+                            )
+                            if imp_res.get("source_id"):
+                                imported.append(
+                                    {"id": imp_res["source_id"], "url": src_url}
                                 )
-                                if imp_res.get("source_id"):
-                                    imported.append(
-                                        {"id": imp_res["source_id"], "url": src_url}
-                                    )
-                                else:
-                                    logger.warning(
-                                        f"Fallback import failed for '{src_url}': {imp_res.get('error')}"
-                                    )
-                            except Exception as fe:
+                                import_success = True
+                            else:
                                 logger.warning(
-                                    f"Fallback import exception for '{src_url}': {fe}"
+                                    f"Fallback import failed for '{src_url}': {imp_res.get('error')}"
                                 )
-                        else:
-                            logger.info(f"Ignoring failed research source: {src_url}")
-                            try:
-                                sources_list: Any = await client.sources.list(
-                                    notebook_id
+                        except Exception as fe:
+                            logger.warning(
+                                f"Fallback import exception for '{src_url}': {fe}"
+                            )
+
+                    if not import_success:
+                        failed_imports_count += 1
+                        logger.info(
+                            f"Ignoring/cleaning up failed research source: {src_url}"
+                        )
+                        try:
+                            sources_list: Any = await client.sources.list(notebook_id)
+                            for existing_src in sources_list or []:
+                                src_u = (
+                                    existing_src.url
+                                    if hasattr(existing_src, "url") and existing_src.url
+                                    else getattr(existing_src, "title", "")
                                 )
-                                for existing_src in sources_list or []:
-                                    src_u = (
-                                        existing_src.url
-                                        if hasattr(existing_src, "url")
-                                        and existing_src.url
-                                        else getattr(existing_src, "title", "")
+                                src_status = (
+                                    existing_src.status
+                                    if hasattr(existing_src, "status")
+                                    else None
+                                )
+                                if src_u == src_url or src_status == "error":
+                                    logger.info(
+                                        f"Removing failed/errored source from NotebookLM: {existing_src.id}"
                                     )
-                                    src_status = (
-                                        existing_src.status
-                                        if hasattr(existing_src, "status")
-                                        else None
+                                    await client.sources.delete(
+                                        notebook_id, existing_src.id
                                     )
-                                    if src_u == src_url or src_status == "error":
-                                        logger.info(
-                                            f"Removing failed/errored source from NotebookLM: {existing_src.id}"
-                                        )
-                                        await client.sources.delete(
-                                            notebook_id, existing_src.id
-                                        )
-                            except Exception as delete_err:
-                                logger.debug(
-                                    f"Error checking/deleting failed source: {delete_err}"
-                                )
+                        except Exception as delete_err:
+                            logger.debug(
+                                f"Error checking/deleting failed source: {delete_err}"
+                            )
+
+                        if (
+                            max_import_failures is not None
+                            and failed_imports_count > max_import_failures
+                        ):
+                            raise RuntimeError(
+                                f"Research import failed: {failed_imports_count} failed import(s) exceeded max_import_failures limit ({max_import_failures})."
+                            )
 
             yield ResearchResult(
                 notebook_id=t.notebook_id,
@@ -818,13 +773,13 @@ async def research_from_source(
     notebook_id: str,
     source_id: str,
     mode: str = "fast",
-    max_imports: Optional[int] = None,
     task_id: Optional[str] = None,
     topic: Optional[str] = None,
     summary: Optional[str] = None,
     suggested_duration: Optional[str] = None,
     on_start_callback: Optional[Callable[[str, str, str, str], Any]] = None,
-    fallback_mechanism: str = "ignore",
+    fallback_importer: Optional[MaybeRef[ImporterConfig]] = None,
+    max_import_failures: Optional[int] = None,
 ) -> ResearchResult:
 
     if not task_id:
@@ -858,8 +813,8 @@ async def research_from_source(
     res = None
     async for r in poll_research_jobs(
         task_gen(),
-        max_imports,
-        fallback_mechanism=fallback_mechanism,
+        fallback_importer=fallback_importer,
+        max_import_failures=max_import_failures,
     ):
         res = r
     if res is None:

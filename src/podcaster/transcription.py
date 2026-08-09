@@ -7,14 +7,14 @@ import tempfile
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from typing import AsyncGenerator, AsyncIterable
+from typing import AsyncGenerator, AsyncIterable, Optional
 
 from google.cloud import storage
 from google.cloud.speech_v2 import SpeechClient
 from google.cloud.speech_v2.types import cloud_speech
 
+from .config import GCPConfig, MaybeRef, PodcastTranscriptionConfig
 from .models import PodcastGenArtifact, TaskStatus, TranscriptionTask
-from .utils import load_config
 
 logger = logging.getLogger(__name__)
 
@@ -140,23 +140,17 @@ async def delete_from_gcs(gcs_uri: str):
 
 async def create_transcription_jobs(
     artifacts: AsyncIterable[PodcastGenArtifact],
-    transcriber_key: str = "default",
+    transcription_config: Optional[MaybeRef[PodcastTranscriptionConfig]] = None,
+    gcp_config: Optional[GCPConfig] = None,
 ) -> AsyncGenerator[TranscriptionTask, None]:
-    config_data = load_config()
-    gcp_config = config_data.gcp
-    from .config import PodcastTranscriptionConfig
+    gcp_config = gcp_config or GCPConfig()
+    trans_cfg = (
+        transcription_config
+        if isinstance(transcription_config, PodcastTranscriptionConfig)
+        else PodcastTranscriptionConfig()
+    )
 
-    if transcriber_key not in config_data.podcast_transcribers:
-        logger.warning(
-            f"Podcast transcriber '{transcriber_key}' not found in configuration. Using default."
-        )
-        transcription_config = config_data.podcast_transcribers.get(
-            "default", PodcastTranscriptionConfig()
-        )
-    else:
-        transcription_config = config_data.podcast_transcribers[transcriber_key]
-
-    speed_factor = transcription_config.speed_factor
+    speed_factor = trans_cfg.speed_factor
     project_id = gcp_config.project_id
     location = gcp_config.location
     bucket_name = gcp_config.gcs_bucket
@@ -271,12 +265,12 @@ async def create_transcription_jobs(
 
 async def poll_transcription_jobs(
     tasks: AsyncIterable[TranscriptionTask],
+    gcp_config: Optional[GCPConfig] = None,
 ) -> AsyncGenerator[TranscriptionTask, None]:
     from google.api_core import operation as api_operation
     from google.longrunning import operations_pb2
 
-    config_data = load_config()
-    gcp_config = config_data.gcp
+    gcp_config = gcp_config or GCPConfig()
     location = gcp_config.location
 
     client = SpeechClient(
@@ -314,12 +308,12 @@ async def poll_transcription_jobs(
 
 async def download_transcription_jobs(
     tasks: AsyncIterable[TranscriptionTask],
+    gcp_config: Optional[GCPConfig] = None,
 ) -> AsyncGenerator[TranscriptionTask, None]:
     from google.api_core import operation as api_operation
     from google.longrunning import operations_pb2
 
-    config_data = load_config()
-    gcp_config = config_data.gcp
+    gcp_config = gcp_config or GCPConfig()
     location = gcp_config.location
 
     client = SpeechClient(
@@ -412,12 +406,15 @@ async def download_transcription_jobs(
 
 async def transcribe_artifacts(
     artifacts: AsyncIterable[PodcastGenArtifact],
-    transcriber_key: str = "default",
+    transcription_config: Optional[MaybeRef[PodcastTranscriptionConfig]] = None,
+    gcp_config: Optional[GCPConfig] = None,
 ) -> AsyncGenerator[TranscriptionTask, None]:
     # 1. Create jobs
     tasks = []
     async for task in create_transcription_jobs(
-        artifacts, transcriber_key=transcriber_key
+        artifacts,
+        transcription_config=transcription_config,
+        gcp_config=gcp_config,
     ):
         tasks.append(task)
 
@@ -427,7 +424,7 @@ async def transcribe_artifacts(
             yield t
 
     completed = []
-    async for comp in poll_transcription_jobs(tasks_gen()):
+    async for comp in poll_transcription_jobs(tasks_gen(), gcp_config=gcp_config):
         completed.append(comp)
 
     # 3. Download results
@@ -435,7 +432,9 @@ async def transcribe_artifacts(
         for c in completed:
             yield c
 
-    async for result in download_transcription_jobs(completed_gen()):
+    async for result in download_transcription_jobs(
+        completed_gen(), gcp_config=gcp_config
+    ):
         yield result
 
 

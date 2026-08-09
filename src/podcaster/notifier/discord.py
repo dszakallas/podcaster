@@ -6,7 +6,7 @@ from typing import Optional, Union
 import httpx
 from jinja2 import Template
 
-from ..utils import find_notebook_dir, get_env_var, load_config
+from ..utils import find_notebook_dir, get_env_var
 from .base import Notifier
 
 logger = logging.getLogger(__name__)
@@ -23,16 +23,13 @@ DEFAULT_DISCORD_TEMPLATE = Template(
 
 async def send_discord_notification(
     notebook_id: str,
+    podcast_dir: str,
     webhook_url: Optional[str] = None,
     bot_token: Optional[str] = None,
     channel_id: Optional[Union[int, str]] = None,
     dist_result: Optional[dict] = None,
-    podcast_dir: Optional[str] = None,
     name: Optional[str] = None,
 ) -> dict:
-    config = load_config()
-    if not podcast_dir:
-        podcast_dir = config.podcast_dir
 
     notebook_dir_name = find_notebook_dir(podcast_dir, notebook_id) or notebook_id
 
@@ -147,8 +144,8 @@ class DiscordNotifier(Notifier):
     async def notify(
         self,
         notebook_id: str,
+        podcast_dir: str,
         dist_result: Optional[dict] = None,
-        podcast_dir: Optional[str] = None,
     ) -> dict:
         return await send_discord_notification(
             notebook_id=notebook_id,

@@ -4,7 +4,7 @@ from typing import Optional, Union
 
 import httpx
 
-from ..utils import find_notebook_dir, get_env_var, load_config
+from ..utils import find_notebook_dir, get_env_var
 from .base import Notifier
 
 logger = logging.getLogger(__name__)
@@ -12,16 +12,13 @@ logger = logging.getLogger(__name__)
 
 async def sync_to_plex(
     notebook_id: str,
+    podcast_dir: str,
     plex_section_id: Union[int, str],
-    podcast_dir: Optional[str] = None,
     plex_server_url: Optional[str] = None,
     plex_token: Optional[str] = None,
     server_library_path: Optional[str] = None,
     name: Optional[str] = None,
 ) -> dict:
-    config = load_config()
-    if not podcast_dir:
-        podcast_dir = config.podcast_dir
 
     notebook_dir_name = find_notebook_dir(podcast_dir, notebook_id)
     if not notebook_dir_name:
@@ -103,8 +100,8 @@ class PlexNotifier(Notifier):
     async def notify(
         self,
         notebook_id: str,
+        podcast_dir: str,
         dist_result: Optional[dict] = None,
-        podcast_dir: Optional[str] = None,
     ) -> dict:
         return await sync_to_plex(
             notebook_id=notebook_id,

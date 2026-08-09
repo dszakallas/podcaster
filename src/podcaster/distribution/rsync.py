@@ -4,7 +4,7 @@ import subprocess
 from typing import Optional
 
 from ..notifier import Notifier
-from ..utils import find_notebook_dir, load_config
+from ..utils import find_notebook_dir
 from .base import Distribution
 
 logger = logging.getLogger(__name__)
@@ -44,13 +44,10 @@ def rclone_copy_dir(src: str, dst: str, flags: Optional[list[str]] = None):
 async def sync_podcast(
     notebook_id: str,
     destination: str,
+    podcast_dir: str,
     method: str = "rsync",
-    podcast_dir: Optional[str] = None,
     flags: Optional[list[str]] = None,
 ) -> dict:
-    config = load_config()
-    if not podcast_dir:
-        podcast_dir = config.podcast_dir
 
     notebook_dir_name = find_notebook_dir(podcast_dir, notebook_id)
     if not notebook_dir_name:
@@ -103,13 +100,13 @@ class RsyncDistribution(Distribution):
     async def _distribute(
         self,
         notebook_id: str,
-        podcast_dir: Optional[str] = None,
+        podcast_dir: str,
     ) -> dict:
         res = await sync_podcast(
             notebook_id,
             self.destination,
-            method=self.method,
             podcast_dir=podcast_dir,
+            method=self.method,
             flags=self.flags,
         )
         if self.name:

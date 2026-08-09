@@ -14,8 +14,8 @@ class Notifier(ABC):
     async def notify(
         self,
         notebook_id: str,
+        podcast_dir: str,
         dist_result: Optional[dict] = None,
-        podcast_dir: Optional[str] = None,
     ) -> dict:
         """Executes the notification operation."""
         ...
@@ -28,19 +28,10 @@ def build_notifier(
     """Constructs a concrete Notifier (PlexNotifier or DiscordNotifier)
     from a resolved NotifierConfig.
     """
-    from ..utils import load_config
     from .discord import DiscordNotifier
     from .plex import PlexNotifier
 
-    if not name:
-        try:
-            app_cfg = load_config()
-            name = next(
-                (k for k, v in app_cfg.notifiers.items() if v is notifier_cfg),
-                None,
-            )
-        except Exception:
-            pass
+    name = name or getattr(notifier_cfg, "_ref_name", None)
 
     if notifier_cfg.plex is not None:
         return PlexNotifier(

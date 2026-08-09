@@ -233,9 +233,6 @@ def get_notebook_dir_name(
     return f"{name} [nlm_{notebook_id}]"
 
 
-DEFAULT_PODCAST_DIR = "podcasts"
-
-
 def find_notebook_dir(base_dir: str, notebook_id: str) -> Optional[str]:
     """Find an existing notebook directory by matching the [nlm_id] suffix."""
     if not os.path.exists(base_dir):
@@ -249,16 +246,12 @@ def find_notebook_dir(base_dir: str, notebook_id: str) -> Optional[str]:
     return None
 
 
-def resolve_notebook_dir_path(
-    notebook_id: str, podcast_dir: Optional[str] = None
-) -> Path:
+def resolve_notebook_dir_path(notebook_id: str, podcast_dir: str) -> Path:
     """Resolve the local storage directory path for a notebook ID, raising ValueError if not found."""
-    config = load_config()
-    base_dir = podcast_dir or config.podcast_dir or DEFAULT_PODCAST_DIR
-    notebook_dir_name = find_notebook_dir(base_dir, notebook_id)
+    notebook_dir_name = find_notebook_dir(podcast_dir, notebook_id)
     if not notebook_dir_name:
         raise ValueError(f"Could not find directory for notebook ID: {notebook_id}")
-    return Path(base_dir) / notebook_dir_name
+    return Path(podcast_dir) / notebook_dir_name
 
 
 def get_or_create_notebook_dir(

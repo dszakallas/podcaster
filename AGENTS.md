@@ -55,8 +55,8 @@ The project uses a **preset-based** configuration system for workflows, distribu
   `[".*"]`.
 - **Paywall Detection**: Scraper agent prompts detect paywalls (missing text, mid-article truncation, or
   login/register overlays) and bail out with a structured JSON error payload.
-- **Research Enrichment Fallback**: Web research jobs use `fallback_mechanism` (an importer name, `ImporterRef`, or
-  `"ignore"`). Errored remote sources are automatically deleted when `"ignore"` is used.
+- **Research Enrichment Fallback**: Web research jobs use `fallback_importer` (an `ImporterRef` or inline
+  `ImporterConfig`) and `max_import_failures` (threshold of allowed failed imports before failing research).
 
 ## Developer Environment
 
