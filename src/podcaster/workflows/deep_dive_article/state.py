@@ -3,9 +3,13 @@ from typing import List, Optional
 
 from pydantic import BaseModel, Field
 
+from podcaster.models import TaskStatus
+
 
 class TranscriptionState(BaseModel):
-    status: str = "pending"  # "pending", "in_progress", "completed", "failed"
+    status: TaskStatus = TaskStatus.PENDING
+    task_id: Optional[str] = None
+    gcs_uri: Optional[str] = None
     lrc_path: Optional[str] = None
     error: Optional[str] = None
 
@@ -13,11 +17,13 @@ class TranscriptionState(BaseModel):
 class TaskState(BaseModel):
     task_id: str
     language: str
-    status: str  # e.g., "pending", "completed", "downloaded", "tagged", "transcribed"
+    status: TaskStatus = TaskStatus.PENDING
     title: Optional[str] = None
     audio_path: Optional[str] = None
     lrc_path: Optional[str] = None
+    is_tagged: bool = False
     error: Optional[str] = None
+    generation_started_at: Optional[float] = None
     transcription: List[TranscriptionState] = Field(default_factory=list)
 
 
@@ -30,7 +36,7 @@ class WorkflowConfig(BaseModel):
 
 
 class EnrichmentState(BaseModel):
-    status: str = "pending"  # "pending", "in_progress", "completed", "failed"
+    status: TaskStatus = TaskStatus.PENDING
     task_id: Optional[str] = None
     topic: Optional[str] = None
     summary: Optional[str] = None
@@ -39,7 +45,7 @@ class EnrichmentState(BaseModel):
 
 
 class CoverState(BaseModel):
-    status: str = "pending"  # "pending", "in_progress", "completed", "failed"
+    status: TaskStatus = TaskStatus.PENDING
     task_id: Optional[str] = None
     image_gen_prompt: Optional[str] = None
     error: Optional[str] = None
@@ -50,7 +56,7 @@ class WorkflowState(BaseModel):
     notebook_id: str
     notebook_title: Optional[str] = None
     preset: str
-    status: str = "in_progress"  # "in_progress", "completed", "failed"
+    status: TaskStatus = TaskStatus.IN_PROGRESS
     config: WorkflowConfig
     source_id: Optional[str] = None
     cover_image_path: Optional[str] = None

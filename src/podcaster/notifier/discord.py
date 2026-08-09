@@ -4,11 +4,21 @@ from pathlib import Path
 from typing import Optional, Union
 
 import httpx
+from jinja2 import Template
 
-from ..utils import find_notebook_dir, get_env_var, load_config, setup_logging
+from ..utils import find_notebook_dir, get_env_var, load_config
 from .base import Notifier
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_DISCORD_TEMPLATE = Template(
+    "🎙️ **Podcast Distributed**\n"
+    "{%- if notebook_title %}\n- **Title**: {{ notebook_title }}{% endif %}\n"
+    "- **Notebook ID**: `{{ notebook_id }}`\n"
+    "{%- if wf_preset %}\n- **Workflow Preset**: `{{ wf_preset }}`{% endif %}\n"
+    "{%- if dest_display %}\n- **Destination**: `{{ dest_display }}`{% endif %}\n"
+    "{%- if wf_config_str %}\n- **Workflow Config**: `{{ wf_config_str }}`{% endif %}"
+)
 
 
 async def send_discord_notification(
@@ -18,12 +28,8 @@ async def send_discord_notification(
     channel_id: Optional[Union[int, str]] = None,
     dist_result: Optional[dict] = None,
     podcast_dir: Optional[str] = None,
-    verbose: bool = False,
     name: Optional[str] = None,
 ) -> dict:
-    if verbose:
-        setup_logging(verbose)
-
     config = load_config()
     if not podcast_dir:
         podcast_dir = config.podcast_dir
@@ -52,20 +58,19 @@ async def send_discord_notification(
     if dist_result and isinstance(dist_result, dict):
         dest_display = dist_result.get("distribution") or dist_result.get("destination")
 
-    lines = ["🎙️ **Podcast Distributed**"]
-    if notebook_title:
-        lines.append(f"- **Title**: {notebook_title}")
-    lines.append(f"- **Notebook ID**: `{notebook_id}`")
-    if wf_preset:
-        lines.append(f"- **Workflow Preset**: `{wf_preset}`")
-    if dest_display:
-        lines.append(f"- **Destination**: `{dest_display}`")
+    wf_config_str = None
     if wf_config and isinstance(wf_config, dict):
         cfg_items = [f"{k}={v}" for k, v in wf_config.items() if v is not None]
         if cfg_items:
-            lines.append(f"- **Workflow Config**: `{', '.join(cfg_items)}`")
+            wf_config_str = ", ".join(cfg_items)
 
-    message = "\n".join(lines)
+    message = DEFAULT_DISCORD_TEMPLATE.render(
+        notebook_title=notebook_title,
+        notebook_id=notebook_id,
+        wf_preset=wf_preset,
+        dest_display=dest_display,
+        wf_config_str=wf_config_str,
+    ).strip()
 
     if webhook_url:
         logger.debug(f"Sending Discord notification via webhook to {webhook_url}")
@@ -114,7 +119,7 @@ async def send_discord_notification(
                 "message": f"Discord notification failed: {e}",
             }
     else:
-        logger.debug(
+        logger.warning(
             "Discord webhook_url or bot_token/channel_id not found. Skipping notification."
         )
         return {
@@ -144,7 +149,6 @@ class DiscordNotifier(Notifier):
         notebook_id: str,
         dist_result: Optional[dict] = None,
         podcast_dir: Optional[str] = None,
-        verbose: bool = False,
     ) -> dict:
         return await send_discord_notification(
             notebook_id=notebook_id,
@@ -153,6 +157,5 @@ class DiscordNotifier(Notifier):
             channel_id=self.channel_id,
             dist_result=dist_result,
             podcast_dir=podcast_dir,
-            verbose=verbose,
             name=self.name,
         )

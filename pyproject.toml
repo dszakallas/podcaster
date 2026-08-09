@@ -22,6 +22,11 @@ dependencies = [
 [project.scripts]
 podcaster = "podcaster.cli:cli"
 
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
+
 [tool.black]
 line-length = 88
 target-version = ["py312"]
@@ -36,17 +41,14 @@ select = ["E", "F", "I"]
 ignore = ["E501"]
 
 [tool.pyright]
-include = ["src/podcaster"]
-typeCheckingMode = "basic"
+include = ["src/podcaster", "tests"]
+typeCheckingMode = "standard"
 pythonVersion = "3.12"
-reportArgumentType = false
-reportAttributeAccessIssue = false
-reportCallIssue = false
-reportGeneralTypeIssues = false
-reportInvalidTypeArguments = false
-reportMissingModuleSource = false
-reportOptionalMemberAccess = false
-reportPrivateImportUsage = false
+venvPath = ".devenv/state"
+venv = "venv"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/podcaster"]

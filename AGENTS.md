@@ -58,21 +58,50 @@ The project uses a **preset-based** configuration system for workflows, distribu
 - **Research Enrichment Fallback**: Web research jobs use `fallback_mechanism` (an importer name, `ImporterRef`, or
   `"ignore"`). Errored remote sources are automatically deleted when `"ignore"` is used.
 
+## Developer Environment
+
+The devenv shell provides all required tools (Python 3.12, uv, pyright, ruff, black, prek).
+Dev dependencies (pytest) are installed automatically via `uv sync` using the `dev` dependency group
+defined in `pyproject.toml`.
+
+- **Run tests**: `uv run pytest tests/ -v` (or `devenv test` via the `devenv:test` task).
+- **Install new dev dependencies**: Add them under `[dependency-groups] dev = [...]` in `pyproject.toml`,
+  then run `uv sync`.
+
+## Testing
+
+Unit tests live in `tests/` and are organized by module:
+
+- `tests/test_ref_resolver.py` — `RefResolver`, `Ref` (resolution, cycles, caching, coercion, extra fields)
+- `tests/test_utils.py` — `sanitize`, `get_notebook_dir_name`, `find_notebook_dir`, duration parsing
+- `tests/test_research_utils.py` — `evaluate_importer_match`, `extract_drive_file_id`, `normalize_source`
+- `tests/test_audio_gen_utils.py` — `duration_to_audio_length`
+
+Pre-commit hooks run the full test suite on changes to `src/podcaster/` or `tests/`.
+
+When adding new generic, isolated utility functions (pure functions, shared logic, non-trivial
+algorithms), add corresponding unit tests in `tests/`. Prefer testing through the public API
+rather than private helpers.
+
 ## Code Quality Checks
 
-After every coding task, and at minimum before each commit, you must pass all three checks:
+**After editing any file**, run `prek run --all-files` to validate all hooks pass. Do this
+after every coding task and at minimum before each commit. This is the single source of truth
+for code quality — it runs all hooks (black, ruff, pyright, pytest, markdownlint, nixfmt).
 
 ```bash
 prek run --all-files
 ```
 
-If hooks fail, fix them before committing:
+If hooks fail, fix them before proceeding:
 
-1. **Black** (`uv run black --check src/podcaster`) — reformat with `uv run black src/podcaster`.
-2. **Ruff** (`uv run ruff check src/podcaster`) — apply safe fixes with `uv run ruff check src/podcaster --fix`;
+1. **Black** — reformat with `uv run black src/podcaster`.
+2. **Ruff** — apply safe fixes with `uv run ruff check src/podcaster tests/ --fix`;
    remaining issues need manual correction.
-3. **Pyright** (`uv run pyright src/podcaster`) — fix type errors manually; the wrapper in the shell picks up the
-   correct venv automatically.
+3. **Pyright** — fix type errors manually.
+4. **Pytest** — fix failing tests before committing.
+5. **Markdownlint** — fix markdown formatting issues in documentation files.
+6. **Nixfmt** — reformat Nix files with `nixfmt`.
 
 Do NOT commit if `prek run --all-files` exits non-zero.
 

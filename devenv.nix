@@ -50,6 +50,14 @@ in
       files = "^src/podcaster/.*\\.py$";
       pass_filenames = true;
     };
+    hooks.pytest = {
+      enable = true;
+      name = "pytest";
+      description = "Run unit tests";
+      entry = "${pkgs.uv}/bin/uv run pytest tests/ -q";
+      files = "^(src/podcaster|tests)/.*\\.py$";
+      pass_filenames = false;
+    };
   };
 
   languages.python.enable = true;
@@ -68,6 +76,10 @@ in
     after = [ "devenv:python:uv" ];
     env.PLAYWRIGHT_BROWSERS_PATH = "${config.devenv.root}/.playwright/browsers";
     env.PLAYWRIGHT_USER_DATA_DIR = "${config.devenv.root}/.playwright/user-data";
+  };
+
+  tasks."devenv:test" = {
+    exec = "${pkgs.uv}/bin/uv run pytest tests/ -v";
   };
 
   enterShell = ''

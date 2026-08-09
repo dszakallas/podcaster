@@ -145,14 +145,16 @@ class ScraperConfig(BaseModel):
 
 class ChainImporterConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    importers: List[Ref["ImporterConfig"]] = Field(default_factory=list)
+    importers: List[Union[Ref["ImporterConfig"], "ImporterConfig"]] = Field(
+        default_factory=list
+    )
 
 
 class ImporterConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     match: List[str] = Field(default_factory=lambda: [".*"])
     native: Optional[NativeImporterConfig] = None
-    scraper: Optional[Ref[ScraperConfig]] = None
+    scraper: Optional[Union[Ref[ScraperConfig], ScraperConfig]] = None
     chain: Optional[ChainImporterConfig] = None
 
 
@@ -160,7 +162,7 @@ class EnrichWebConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     enable: bool = True
     retry_count: int = 0
-    fallback_mechanism: Union[str, Ref[ImporterConfig]] = "ignore"
+    fallback_mechanism: Union[str, Ref[ImporterConfig], ImporterConfig] = "ignore"
     spec: EnrichWebSpecConfig = Field(default_factory=EnrichWebSpecConfig)
 
 
@@ -185,9 +187,9 @@ class TranscribeConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     enable: bool = False
     retry_count: int = 0
-    podcast_transcriber: Ref[PodcastTranscriptionConfig] = Field(
-        default_factory=Ref[PodcastTranscriptionConfig]
-    )
+    podcast_transcriber: Union[
+        Ref[PodcastTranscriptionConfig], PodcastTranscriptionConfig
+    ] = Field(default_factory=Ref[PodcastTranscriptionConfig])
 
 
 class RsyncDistributionConfig(BaseModel):
@@ -224,7 +226,7 @@ NotifierRef = Ref[NotifierConfig]
 class DistributionConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     rsync: Optional[RsyncDistributionConfig] = None
-    notifiers: List[NotifierRef] = Field(default_factory=list)
+    notifiers: List[Union[NotifierRef, NotifierConfig]] = Field(default_factory=list)
 
 
 DistributionRef = Ref[DistributionConfig]
@@ -233,7 +235,7 @@ DistributionRef = Ref[DistributionConfig]
 class TaggingConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     enable: bool = True
-    spec: Optional[Ref[PodcastTagsConfig]] = Field(
+    spec: Optional[Union[Ref[PodcastTagsConfig], PodcastTagsConfig]] = Field(
         default_factory=lambda: Ref[PodcastTagsConfig](ref="default")
     )
 
@@ -241,17 +243,19 @@ class TaggingConfig(BaseModel):
 class DeepDiveArticleConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
     type: Literal["deep_dive_article"] = "deep_dive_article"
-    podcast_generator: Ref[PodcastGenerationConfig] = Field(
-        default_factory=Ref[PodcastGenerationConfig]
+    podcast_generator: Union[Ref[PodcastGenerationConfig], PodcastGenerationConfig] = (
+        Field(default_factory=Ref[PodcastGenerationConfig])
     )
-    importer: Ref[ImporterConfig] = Field(
+    importer: Union[Ref[ImporterConfig], ImporterConfig] = Field(
         default_factory=lambda: Ref[ImporterConfig](ref="default"),
     )
     enrich_web: EnrichWebConfig = Field(default_factory=EnrichWebConfig)
     generate_cover: GenerateCoverConfig = Field(default_factory=GenerateCoverConfig)
     transcribe: TranscribeConfig = Field(default_factory=TranscribeConfig)
     tagging: TaggingConfig = Field(default_factory=TaggingConfig)
-    distribute: List[DistributionRef] = Field(default_factory=list)
+    distribute: List[Union[DistributionRef, DistributionConfig]] = Field(
+        default_factory=list
+    )
 
 
 class WorkflowConfig(RootModel):
@@ -328,3 +332,141 @@ class AppConfig(BaseModel):
 
 ChainImporterConfig.model_rebuild()
 ImporterConfig.model_rebuild()
+
+
+class RefResolver:
+    """Walks a Pydantic model tree and resolves all Ref instances in-place.
+
+    Args:
+        registries: Maps target type names to the config attribute path
+            containing the registry dict. E.g. {"ImporterConfig": "importers"}.
+    """
+
+    def __init__(self, registries: dict[str, str]) -> None:
+        self._registries = registries
+
+    def resolve(self, config: BaseModel) -> BaseModel:
+        """Resolve all Ref instances in the config tree, modifying it in-place."""
+        cache: dict[int, Any] = {}
+        visited: set[str] = set()
+        self._walk(config, config, cache, visited)
+        return config
+
+    def _resolve_ref(
+        self,
+        ref: Ref,
+        root: BaseModel,
+        cache: dict[int, Any],
+        visited: set[str],
+    ) -> Any:
+        cache_key = id(ref)
+        if cache_key in cache:
+            return cache[cache_key]
+
+        key = f"{type(ref).__name__}:{ref.ref}"
+        if key in visited:
+            raise ValueError(f"Circular reference detected: {key}")
+
+        metadata = getattr(type(ref), "__pydantic_generic_metadata__", None)
+        if not metadata or not metadata.get("args"):
+            raise ValueError(f"Cannot determine target type for {type(ref)}")
+        target_type = metadata["args"][0]
+        target_name = (
+            target_type if isinstance(target_type, str) else target_type.__name__
+        )
+        field_name = self._registries.get(target_name)
+        if not field_name:
+            raise ValueError(f"No registry mapping for target type {target_type}")
+
+        registry = getattr(root, field_name)
+        name = ref.ref
+        if name and name not in registry:
+            raise ValueError(f"'{name}' not found in config.{field_name}")
+        target = registry[name] if name else None
+
+        cache[cache_key] = target
+
+        visited.add(key)
+        if target is not None:
+            self._walk(target, root, cache, visited)
+        visited.discard(key)
+
+        return target
+
+    def _walk(
+        self,
+        obj: Any,
+        root: BaseModel,
+        cache: dict[int, Any],
+        visited: set[str],
+    ) -> None:
+        if isinstance(obj, BaseModel):
+            updates: dict[str, Any] = {}
+            for field_name in type(obj).model_fields:
+                val = getattr(obj, field_name)
+                if isinstance(val, Ref):
+                    updates[field_name] = self._resolve_ref(val, root, cache, visited)
+                elif isinstance(val, list):
+                    resolved_list: list[Any] = []
+                    changed = False
+                    for item in val:
+                        if isinstance(item, Ref):
+                            resolved_list.append(
+                                self._resolve_ref(item, root, cache, visited)
+                            )
+                            changed = True
+                        else:
+                            resolved_list.append(item)
+                            if isinstance(item, BaseModel):
+                                self._walk(item, root, cache, visited)
+                    if changed:
+                        updates[field_name] = resolved_list
+                elif isinstance(val, dict):
+                    resolved_dict: dict[Any, Any] = {}
+                    changed = False
+                    for k, v in val.items():
+                        if isinstance(v, Ref):
+                            resolved_dict[k] = self._resolve_ref(
+                                v, root, cache, visited
+                            )
+                            changed = True
+                        else:
+                            resolved_dict[k] = v
+                            if isinstance(v, BaseModel):
+                                self._walk(v, root, cache, visited)
+                    if changed:
+                        updates[field_name] = resolved_dict
+                elif isinstance(val, BaseModel):
+                    self._walk(val, root, cache, visited)
+            for k, v in updates.items():
+                setattr(obj, k, v)
+        elif isinstance(obj, dict):
+            for k, v in list(obj.items()):
+                if isinstance(v, Ref):
+                    obj[k] = self._resolve_ref(v, root, cache, visited)
+                elif isinstance(v, BaseModel):
+                    self._walk(v, root, cache, visited)
+        elif isinstance(obj, list):
+            for i, item in enumerate(obj):
+                if isinstance(item, Ref):
+                    obj[i] = self._resolve_ref(item, root, cache, visited)
+                elif isinstance(item, BaseModel):
+                    self._walk(item, root, cache, visited)
+
+
+_APP_CONFIG_REGISTRIES = {
+    "ImporterConfig": "importers",
+    "ScraperConfig": "scrapers",
+    "PodcastGenerationConfig": "podcast_generators",
+    "PodcastTranscriptionConfig": "podcast_transcribers",
+    "PodcastTagsConfig": "podcast_tags",
+    "NotifierConfig": "notifiers",
+    "DistributionConfig": "distributions",
+}
+
+
+def resolve_refs(config: "AppConfig") -> "AppConfig":
+    """Resolve all Ref instances in an AppConfig tree."""
+    resolver = RefResolver(_APP_CONFIG_REGISTRIES)
+    resolver.resolve(config)
+    return config

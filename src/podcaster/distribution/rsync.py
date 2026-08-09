@@ -4,7 +4,7 @@ import subprocess
 from typing import Optional
 
 from ..notifier import Notifier
-from ..utils import find_notebook_dir, load_config, setup_logging
+from ..utils import find_notebook_dir, load_config
 from .base import Distribution
 
 logger = logging.getLogger(__name__)
@@ -46,12 +46,8 @@ async def sync_podcast(
     destination: str,
     method: str = "rsync",
     podcast_dir: Optional[str] = None,
-    verbose: bool = False,
     flags: Optional[list[str]] = None,
 ) -> dict:
-    if verbose:
-        setup_logging(verbose)
-
     config = load_config()
     if not podcast_dir:
         podcast_dir = config.podcast_dir
@@ -108,14 +104,12 @@ class RsyncDistribution(Distribution):
         self,
         notebook_id: str,
         podcast_dir: Optional[str] = None,
-        verbose: bool = False,
     ) -> dict:
         res = await sync_podcast(
             notebook_id,
             self.destination,
             method=self.method,
             podcast_dir=podcast_dir,
-            verbose=verbose,
             flags=self.flags,
         )
         if self.name:

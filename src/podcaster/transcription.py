@@ -7,13 +7,14 @@ import tempfile
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from typing import AsyncGenerator
+from typing import AsyncGenerator, AsyncIterable
 
 from google.cloud import storage
 from google.cloud.speech_v2 import SpeechClient
 from google.cloud.speech_v2.types import cloud_speech
 
-from .utils import load_config, setup_logging
+from .models import PodcastGenArtifact, TaskStatus, TranscriptionTask
+from .utils import load_config
 
 logger = logging.getLogger(__name__)
 
@@ -138,13 +139,9 @@ async def delete_from_gcs(gcs_uri: str):
 
 
 async def create_transcription_jobs(
-    artifacts: AsyncGenerator[dict, None],
-    verbose: bool = False,
+    artifacts: AsyncIterable[PodcastGenArtifact],
     transcriber_key: str = "default",
-) -> AsyncGenerator[dict, None]:
-    if verbose:
-        setup_logging(verbose)
-
+) -> AsyncGenerator[TranscriptionTask, None]:
     config_data = load_config()
     gcp_config = config_data.gcp
     from .config import PodcastTranscriptionConfig
@@ -178,18 +175,18 @@ async def create_transcription_jobs(
     executor = ThreadPoolExecutor(max_workers=num_workers)
     loop = asyncio.get_running_loop()
 
-    async for art in artifacts:
-        local_path = art.get("path")
+    async for art_item in artifacts:
+        local_path = art_item.path
         if not local_path or not os.path.exists(local_path):
             logger.error(f"File not found for transcription: {local_path}")
             continue
 
-        metadata = art.get("metadata", {})
+        metadata = art_item.metadata
         gen_podcast_meta = metadata.get("generate-podcast", {})
         lang_code = gen_podcast_meta.get("language", "en")
         bcp47_lang = LANGUAGE_MAP.get(lang_code, lang_code)
 
-        artifact_id = art.get("artifact_id", "unknown")
+        artifact_id = art_item.artifact_id
 
         gcs_uri = None
         # Use a temporary file for local preprocessing output
@@ -202,50 +199,59 @@ async def create_transcription_jobs(
                 f"Preprocessing {local_path} ({speed_factor}x speed, mono, wav)..."
             )
             await loop.run_in_executor(
-                executor, preprocess_audio, local_path, preprocessed_path, speed_factor
+                executor,
+                preprocess_audio,
+                local_path,
+                preprocessed_path,
+                speed_factor,
             )
 
-            # 2. Upload to GCS with random suffix
-            random_suffix = uuid.uuid4().hex[:8]
-            gcs_blob_name = f"transcription_staging/{artifact_id}_{random_suffix}.wav"
-            logger.info(f"Uploading preprocessed file to GCS: {gcs_blob_name}...")
-            gcs_uri = await upload_to_gcs(preprocessed_path, bucket_name, gcs_blob_name)
+            # 2. Upload to GCS
+            dest_name = (
+                f"transcriptions/{uuid.uuid4().hex}_{os.path.basename(local_path)}.wav"
+            )
+            logger.info(
+                f"Uploading preprocessed audio to gs://{bucket_name}/{dest_name}..."
+            )
+            gcs_uri = await upload_to_gcs(preprocessed_path, bucket_name, dest_name)
 
-            # 3. Prepare transcription config
-            recognition_config = cloud_speech.RecognitionConfig(
+            # 3. Create async batch recognition request
+            logger.info(
+                f"Submitting BatchRecognize request for {gcs_uri} (language: {bcp47_lang})..."
+            )
+            parent = f"projects/{project_id}/locations/{location}"
+            rec_config = cloud_speech.RecognitionConfig(
                 auto_decoding_config=cloud_speech.AutoDetectDecodingConfig(),
                 language_codes=[bcp47_lang],
                 model="chirp_2",
                 features=cloud_speech.RecognitionFeatures(
                     enable_word_time_offsets=True,
-                    enable_automatic_punctuation=True,
                 ),
             )
-
+            file_metadata = cloud_speech.BatchRecognizeFileMetadata(uri=gcs_uri)
             request = cloud_speech.BatchRecognizeRequest(
-                recognizer=f"projects/{project_id}/locations/{location}/recognizers/_",
-                config=recognition_config,
-                files=[cloud_speech.BatchRecognizeFileMetadata(uri=gcs_uri)],
+                recognizer=f"{parent}/recognizers/_",
+                config=rec_config,
+                files=[file_metadata],
                 recognition_output_config=cloud_speech.RecognitionOutputConfig(
                     inline_response_config=cloud_speech.InlineOutputConfig(),
                 ),
-                processing_strategy=cloud_speech.BatchRecognizeRequest.ProcessingStrategy.DYNAMIC_BATCHING,
             )
-
-            # 4. Execute operation creation
-            logger.info(f"Transcribing {local_path} (Batch Chirp 2)...")
             operation = client.batch_recognize(request=request)
+            operation_id = operation.operation.name
+            logger.info(f"Started BatchRecognize operation: {operation_id}")
 
-            yield {
-                **art,
-                "task_id": operation.operation.name,
-                "preprocessed_path": preprocessed_path,
-                "gcs_uri": gcs_uri,
-                "bcp47_lang": bcp47_lang,
-                "speed_factor": speed_factor,
-                "status": "pending",
-                "type": "transcription",
-            }
+            yield TranscriptionTask(
+                artifact_id=artifact_id,
+                task_id=operation_id,
+                gcs_uri=gcs_uri,
+                path=local_path,
+                preprocessed_path=preprocessed_path,
+                bcp47_lang=bcp47_lang or "en-US",
+                speed_factor=speed_factor,
+                status=TaskStatus.PENDING,
+                metadata=metadata,
+            )
 
         except Exception as e:
             logger.error(f"Failed to start transcription for {local_path}: {e}")
@@ -264,8 +270,8 @@ async def create_transcription_jobs(
 
 
 async def poll_transcription_jobs(
-    tasks: AsyncGenerator[dict, None],
-) -> AsyncGenerator[dict, None]:
+    tasks: AsyncIterable[TranscriptionTask],
+) -> AsyncGenerator[TranscriptionTask, None]:
     from google.api_core import operation as api_operation
     from google.longrunning import operations_pb2
 
@@ -277,8 +283,8 @@ async def poll_transcription_jobs(
         client_options={"api_endpoint": f"{location}-speech.googleapis.com"}
     )
 
-    async for task in tasks:
-        task_id = task["task_id"]
+    async for t in tasks:
+        task_id = t.task_id
         logger.info(f"Polling transcription operation: {task_id}")
         while True:
             try:
@@ -294,9 +300,11 @@ async def poll_transcription_jobs(
                     try:
                         # Call result to verify it completed without error
                         op.result()
-                        yield {**task, "status": "completed"}
+                        yield t.model_copy(update={"status": TaskStatus.COMPLETED})
                     except Exception as e:
-                        yield {**task, "status": "failed", "error": str(e)}
+                        yield t.model_copy(
+                            update={"status": TaskStatus.FAILED, "error": str(e)}
+                        )
                     break
             except Exception as e:
                 logger.error(f"Error polling transcription: {e}")
@@ -305,8 +313,8 @@ async def poll_transcription_jobs(
 
 
 async def download_transcription_jobs(
-    tasks: AsyncGenerator[dict, None], verbose: bool = False
-) -> AsyncGenerator[dict, None]:
+    tasks: AsyncIterable[TranscriptionTask],
+) -> AsyncGenerator[TranscriptionTask, None]:
     from google.api_core import operation as api_operation
     from google.longrunning import operations_pb2
 
@@ -318,20 +326,22 @@ async def download_transcription_jobs(
         client_options={"api_endpoint": f"{location}-speech.googleapis.com"}
     )
 
-    async for task in tasks:
-        if task.get("status") != "completed":
+    async for t in tasks:
+        if t.status != TaskStatus.COMPLETED:
             logger.warning(
-                f"Skipping download for transcription task {task['task_id']} as status is not completed"
+                f"Skipping download for transcription task {t.task_id} as status is not completed"
             )
             continue
 
-        task_id = task["task_id"]
-        local_path = task.get("path")
-        preprocessed_path = task.get("preprocessed_path")
-        gcs_uri = task.get("gcs_uri")
-        speed_factor = task.get("speed_factor", 1.0)
-        bcp47_lang = task.get("bcp47_lang", "en-US")
-        metadata = task.get("metadata", {})
+        task_id = t.task_id
+        local_path = t.path
+        if not local_path:
+            raise ValueError(f"Task {t.task_id} is missing local path.")
+        preprocessed_path = t.preprocessed_path
+        gcs_uri = t.gcs_uri
+        speed_factor = t.speed_factor
+        bcp47_lang = t.bcp47_lang
+        metadata = t.metadata.copy()
 
         try:
             gapic_op = client.get_operation(
@@ -343,10 +353,11 @@ async def download_transcription_jobs(
                 cloud_speech.BatchRecognizeResponse,
             )
 
-            # Get deserialized response
             response = op.result()
+            if not response or not getattr(response, "results", None):
+                raise RuntimeError("No response or results returned from Speech API.")
 
-            result = response.results.get(gcs_uri)
+            result = response.results.get(gcs_uri or "")
             if not result:
                 raise RuntimeError("No result returned for this file.")
 
@@ -372,22 +383,20 @@ async def download_transcription_jobs(
                 "lrc_path": lrc_path,
             }
 
-            yield {
-                **task,
-                "transcript_path": transcript_json_path,
-                "lrc_path": lrc_path,
-                "metadata": metadata,
-                "status": "downloaded",
-            }
+            yield t.model_copy(
+                update={
+                    "transcript_path": transcript_json_path,
+                    "lrc_path": lrc_path,
+                    "metadata": metadata,
+                    "status": TaskStatus.COMPLETED,
+                }
+            )
 
         except Exception as e:
             logger.error(
-                f"Failed to process transcription results for {local_path}: {e}"
+                f"Failed to process transcription results for {local_path}: {e}",
+                exc_info=True,
             )
-            if verbose:
-                import traceback
-
-                traceback.print_exc()
         finally:
             if gcs_uri:
                 try:
@@ -402,14 +411,13 @@ async def download_transcription_jobs(
 
 
 async def transcribe_artifacts(
-    artifacts: AsyncGenerator[dict, None],
-    verbose: bool = False,
+    artifacts: AsyncIterable[PodcastGenArtifact],
     transcriber_key: str = "default",
-) -> AsyncGenerator[dict, None]:
+) -> AsyncGenerator[TranscriptionTask, None]:
     # 1. Create jobs
     tasks = []
     async for task in create_transcription_jobs(
-        artifacts, verbose, transcriber_key=transcriber_key
+        artifacts, transcriber_key=transcriber_key
     ):
         tasks.append(task)
 
@@ -427,7 +435,7 @@ async def transcribe_artifacts(
         for c in completed:
             yield c
 
-    async for result in download_transcription_jobs(completed_gen(), verbose):
+    async for result in download_transcription_jobs(completed_gen()):
         yield result
 
 
@@ -474,9 +482,12 @@ def generate_lrc(
                 if start_offset is None:
                     seconds = 0.0
                 elif hasattr(start_offset, "total_seconds"):
-                    seconds = start_offset.total_seconds()
+                    seconds = float(getattr(start_offset, "total_seconds")())
                 else:
-                    seconds = start_offset.seconds + start_offset.nanos / 1e9
+                    seconds = (
+                        getattr(start_offset, "seconds", 0)
+                        + getattr(start_offset, "nanos", 0) / 1e9
+                    )
 
                 if curr_start is None:
                     curr_start = seconds
