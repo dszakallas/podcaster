@@ -3,19 +3,19 @@ import importlib
 import logging
 import math
 import os
-import sys
 import time
 from pathlib import Path
-from typing import AsyncGenerator, Optional
+from typing import AsyncGenerator, AsyncIterable, Optional, Union
 
 from notebooklm.exceptions import NotebookNotFoundError
 from notebooklm.rpc import AudioLength
 
+from ..config import MaybeRef, PodcastGenerationConfig
+from ..models import PodcastGenArtifact, PodcastGenTask, TaskStatus
 from ..utils import (
     RetryingNotebookLMClient,
+    get_notebooklm_client,
     get_or_create_notebook_dir,
-    get_storage_path,
-    load_config,
     parse_duration_minutes,
     resolve_duration,
     sanitize,
@@ -26,6 +26,12 @@ logger = logging.getLogger(__name__)
 
 
 LANGUAGES_SUPPORTING_LENGTH = {"en"}
+DEFAULT_AUDIO_MINUTES = 20
+MIN_POLL_INTERVAL = 10.0
+MAX_POLL_INTERVAL = 120.0
+INITIAL_POLL_INTERVAL = 30.0
+POST_ETA_HALF_LIFE = 600.0
+MAX_POLL_TIMEOUT_SECONDS = 1800.0
 
 
 def duration_to_audio_length(duration_str: str) -> AudioLength:
@@ -60,27 +66,16 @@ def load_plugin(type_name: str):
         )
 
 
-async def generate_tasks(
+async def create_podcast_audio_jobs(
     notebook_id: str,
     type_name: str,
     languages: list[str],
     length_str: Optional[str],
     format_args_json: str,
     dry_run: bool = False,
-    generator_key: str = "default",
-) -> AsyncGenerator[dict, None]:
-    config = load_config()
-    from ..config import PodcastGenerationConfig
-
-    if generator_key not in config.podcast_generators:
-        logger.warning(
-            f"Podcast generator '{generator_key}' not found in configuration. Using default."
-        )
-        gen_defaults = config.podcast_generators.get(
-            "default", PodcastGenerationConfig()
-        )
-    else:
-        gen_defaults = config.podcast_generators[generator_key]
+    generator_config: Optional[MaybeRef[PodcastGenerationConfig]] = None,
+) -> AsyncGenerator[PodcastGenTask, None]:
+    gen_defaults = generator_config or PodcastGenerationConfig()
 
     if not languages:
         languages = gen_defaults.languages
@@ -88,16 +83,12 @@ async def generate_tasks(
     if not length_str:
         length_str = gen_defaults.length
 
-    length_str = resolve_duration(length_str)
-
-    storage_path = get_storage_path()
+    length_str = resolve_duration(length_str or "default")
 
     plugin = load_plugin(type_name)
     inputs = plugin.Inputs.model_validate_json(format_args_json or "{}")
 
-    async with await RetryingNotebookLMClient.from_storage(
-        storage_path, timeout=120.0
-    ) as client:
+    async with get_notebooklm_client() as client:
         critical_path = Path(__file__).parent / "data" / "critical.md"
         critical_content = critical_path.read_text()
         params = AudioGenParams(notebook_id=notebook_id, length=length_str)
@@ -107,8 +98,8 @@ async def generate_tasks(
         if dry_run:
             return
 
-        minutes = parse_duration_minutes(length_str) or 20
-        eta = max(8.0, minutes * 0.5)
+        minutes = parse_duration_minutes(length_str) or DEFAULT_AUDIO_MINUTES
+        eta = max(480.0, minutes * 30.0)
 
         for lang_code in languages:
             audio_length = duration_to_audio_length(length_str)
@@ -122,13 +113,14 @@ async def generate_tasks(
                     instructions=instructions,
                     audio_length=audio_length,
                 )
-                if status.status == "failed" or not status.task_id:
+                if status.status == TaskStatus.FAILED or not status.task_id:
                     raise RuntimeError(status.error or "No task ID returned")
-                yield {
-                    "notebook_id": notebook_id,
-                    "task_id": status.task_id,
-                    "eta": eta,
-                    "metadata": {
+                yield PodcastGenTask(
+                    notebook_id=notebook_id,
+                    task_id=status.task_id,
+                    eta=eta,
+                    generation_started_at=time.time(),
+                    metadata={
                         "generate-podcast": {
                             "language": lang_code,
                             "type": type_name,
@@ -136,17 +128,17 @@ async def generate_tasks(
                             "format_args": inputs.model_dump(),
                         }
                     },
-                }
+                )
             except Exception as e:
                 logger.error(
                     f"[{lang_code}] Audio generation initialization failed: {e}"
                 )
-                yield {
-                    "notebook_id": notebook_id,
-                    "task_id": "",
-                    "status": "failed",
-                    "error": str(e),
-                    "metadata": {
+                yield PodcastGenTask(
+                    notebook_id=notebook_id,
+                    task_id="",
+                    status=TaskStatus.FAILED,
+                    error=str(e),
+                    metadata={
                         "generate-podcast": {
                             "language": lang_code,
                             "type": type_name,
@@ -154,7 +146,26 @@ async def generate_tasks(
                             "format_args": inputs.model_dump(),
                         }
                     },
-                }
+                )
+
+
+def _poll_interval(t: float, target: float) -> float:
+    """Compute the next polling interval based on elapsed time since generation started.
+
+    Two-piece curve with peak polling frequency at the ETA:
+      Pre-ETA:  linear ramp from INITIAL_POLL_INTERVAL down to MIN_POLL_INTERVAL
+      Post-ETA: exponential growth from MIN_POLL_INTERVAL, capped at MAX_POLL_INTERVAL
+    """
+    if t <= target:
+        progress = t / target if target > 0 else 1.0
+        return (
+            INITIAL_POLL_INTERVAL
+            - (INITIAL_POLL_INTERVAL - MIN_POLL_INTERVAL) * progress
+        )
+    else:
+        rate = math.log(MAX_POLL_INTERVAL / MIN_POLL_INTERVAL) / POST_ETA_HALF_LIFE
+        raw = MIN_POLL_INTERVAL * math.exp(rate * (t - target))
+        return min(MAX_POLL_INTERVAL, raw)
 
 
 async def _poll_single_task(
@@ -162,41 +173,26 @@ async def _poll_single_task(
     notebook_id: str,
     task_id: str,
     lang_code: str,
-    eta: float,
-) -> Optional[dict]:
-    target_time = eta * 60
-    start_time = time.monotonic()
-    log2_30 = math.log2(30.0)
+    target_time: float = 600.0,
+    generation_started_at: Optional[float] = None,
+) -> dict:
+    """Polls a single artifact generation task until complete, failed, or timed out.
 
-    k_denom = abs(300.0 - target_time)
-    k = max(1.0, k_denom / log2_30)
-
-    max_timeout = max(1800.0, target_time * 2.5)  # Allow up to 30 mins for generation
-    consecutive_missing = 0
-    max_consecutive_missing = (
-        5  # Allow up to 5 consecutive polls where artifact is temporarily missing
-    )
-    first_poll = True
+    Uses a two-piece interval curve that peaks at the ETA. If generation_started_at
+    is provided (e.g. from a resumed workflow), polling starts at the correct offset
+    on the curve with an immediate first poll.
+    """
+    if generation_started_at is not None:
+        started_at = generation_started_at
+    else:
+        started_at = time.time()
 
     while True:
-        elapsed = time.monotonic() - start_time
-        if elapsed > max_timeout:
-            logger.warning(
-                f"[{lang_code}] Task {task_id} timed out after {elapsed:.1f}s"
-            )
-            return {
-                "status": "failed",
-                "notebook_id": notebook_id,
-                "artifact_id": task_id,
-                "error": f"Task {task_id} timed out after {elapsed:.1f} seconds",
-            }
-
         try:
             artifacts = await client.artifacts.list(notebook_id)
             artifact = next((a for a in (artifacts or []) if a.id == task_id), None)
 
             if artifact:
-                consecutive_missing = 0  # Reset missing counter
                 status_val = artifact.status
                 status_name = (
                     artifact.status.name.lower()
@@ -205,13 +201,12 @@ async def _poll_single_task(
                 )
 
                 logger.debug(
-                    f"[{lang_code}] Task {task_id} status: {status_name} (val: {status_val})",
-                    file=sys.stderr,
+                    f"[{lang_code}] Task {task_id} status: {status_name} (val: {status_val})"
                 )
 
                 if status_val == 3 or status_name == "completed":
                     return {
-                        "status": "completed",
+                        "status": TaskStatus.COMPLETED,
                         "notebook_id": notebook_id,
                         "artifact_id": task_id,
                         "title": artifact.title,
@@ -227,65 +222,70 @@ async def _poll_single_task(
                         or f"NotebookLM artifact status is '{status_name}' (val: {status_val})"
                     )
                     return {
-                        "status": "failed",
+                        "status": TaskStatus.FAILED,
                         "notebook_id": notebook_id,
                         "artifact_id": task_id,
                         "error": error_msg,
                     }
-                # If status is in-progress (val 1, 2, "pending", "in_progress", etc.), continue loop
             else:
-                consecutive_missing += 1
                 logger.warning(
-                    f"[{lang_code}] Task {task_id} not found in artifact list (attempt {consecutive_missing}/{max_consecutive_missing}). Retrying..."
+                    f"[{lang_code}] Task {task_id} not found in artifact list. Retrying..."
                 )
-                if consecutive_missing >= max_consecutive_missing:
-                    return {
-                        "status": "failed",
-                        "notebook_id": notebook_id,
-                        "artifact_id": task_id,
-                        "error": f"Artifact {task_id} not found in notebook artifact list after {max_consecutive_missing} attempts",
-                    }
         except Exception as e:
-            logger.warning(f"[{lang_code}] Polling error (will retry): {e}")
+            logger.warning(f"[{lang_code}] Polling error for task {task_id}: {e}")
 
-        if first_poll:
-            logger.debug(f"[{lang_code}] Waiting 5 minutes before next poll...")
-            await asyncio.sleep(300)
-            first_poll = False
-            continue
+        t = time.time() - started_at
+        if t > MAX_POLL_TIMEOUT_SECONDS:
+            logger.warning(f"[{lang_code}] Task {task_id} timed out after {t:.1f}s")
+            return {
+                "status": TaskStatus.FAILED,
+                "notebook_id": notebook_id,
+                "artifact_id": task_id,
+                "error": f"Task {task_id} timed out after {t:.1f} seconds",
+            }
 
-        interval = max(10.0, 10.0 * math.pow(2.0, abs(elapsed - target_time) / k))
+        interval = _poll_interval(t, target_time)
+        logger.debug(
+            f"[{lang_code}] Task {task_id} next poll in {interval:.0f}s (t={t:.0f}s, target={target_time:.0f}s)"
+        )
         await asyncio.sleep(interval)
 
 
-async def poll_tasks(tasks: AsyncGenerator[dict, None]) -> AsyncGenerator[dict, None]:
-    storage_path = get_storage_path()
-
-    async with await RetryingNotebookLMClient.from_storage(
-        storage_path, timeout=120.0
-    ) as client:
+async def poll_tasks(
+    tasks: AsyncIterable[PodcastGenTask],
+) -> AsyncGenerator[PodcastGenTask, None]:
+    async with get_notebooklm_client() as client:
         pending = set()
 
-        async def wrap_poll(task):
-            lang_code = (
-                task.get("metadata", {})
-                .get("generate-podcast", {})
-                .get("language", "unknown")
+        async def wrap_poll(t_item: PodcastGenTask):
+            lang_code = t_item.metadata.get("generate-podcast", {}).get(
+                "language", "unknown"
             )
-            task_id = task["task_id"]
             res = await _poll_single_task(
-                client, task["notebook_id"], task_id, lang_code, task.get("eta", 10.0)
+                client,
+                t_item.notebook_id,
+                t_item.task_id,
+                lang_code,
+                t_item.eta,
+                t_item.generation_started_at,
             )
             if res:
-                # Merge original metadata and add poller metadata
-                metadata = task.get("metadata", {}).copy()
+                metadata = t_item.metadata.copy()
                 metadata["poll-artifact-task"] = {
-                    "task_id": task_id,
-                    "status": res.get("status", "completed"),
+                    "task_id": t_item.task_id,
+                    "status": res.get("status", TaskStatus.COMPLETED),
                     "polled_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 }
-                res["metadata"] = metadata
-            return res
+                status_val = res.get("status", TaskStatus.COMPLETED)
+                return PodcastGenTask(
+                    notebook_id=t_item.notebook_id,
+                    task_id=t_item.task_id,
+                    title=res.get("title") or t_item.title,
+                    status=status_val,
+                    error=res.get("error"),
+                    metadata=metadata,
+                )
+            return t_item
 
         async for task in tasks:
             pending.add(asyncio.create_task(wrap_poll(task)))
@@ -301,23 +301,28 @@ async def poll_tasks(tasks: AsyncGenerator[dict, None]) -> AsyncGenerator[dict, 
 
 
 async def download_artifacts(
-    artifacts: AsyncGenerator[dict, None], podcast_dir: Optional[str] = None
-) -> AsyncGenerator[dict, None]:
-    storage_path = get_storage_path()
-
-    config = load_config()
-    if not podcast_dir:
-        podcast_dir = config.podcast_dir
-
+    artifacts: AsyncIterable[Union[PodcastGenTask, PodcastGenArtifact]],
+    podcast_dir: str,
+) -> AsyncGenerator[PodcastGenArtifact, None]:
     os.makedirs(podcast_dir, exist_ok=True)
 
-    async with await RetryingNotebookLMClient.from_storage(
-        storage_path, timeout=120.0
-    ) as client:
-        async for art in artifacts:
-            notebook_id = art["notebook_id"]
-            artifact_id = art["artifact_id"]
-            title = art.get("title", artifact_id)
+    async with get_notebooklm_client() as client:
+        async for raw_art in artifacts:
+            if isinstance(raw_art, PodcastGenArtifact):
+                art_item = raw_art
+            else:
+                art_item = PodcastGenArtifact(
+                    notebook_id=raw_art.notebook_id,
+                    artifact_id=raw_art.task_id,
+                    title=raw_art.title or raw_art.task_id,
+                    path="",
+                    filename="",
+                    metadata=raw_art.metadata,
+                )
+
+            notebook_id = art_item.notebook_id
+            artifact_id = art_item.artifact_id
+            title = art_item.title
 
             # Fetch notebook for directory name
             try:
@@ -346,16 +351,15 @@ async def download_artifacts(
                     notebook_id, out_path, artifact_id=artifact_id
                 )
 
-                yield {
-                    **art,
-                    "path": out_path,
-                    "filename": filename,
-                    "album": album,
-                    "created_at": (
-                        notebook.created_at.isoformat()
-                        if notebook and notebook.created_at
-                        else art.get("created_at")
-                    ),
-                }
+                yield PodcastGenArtifact(
+                    notebook_id=notebook_id,
+                    artifact_id=artifact_id,
+                    title=title,
+                    path=out_path,
+                    filename=filename,
+                    lrc_path=art_item.lrc_path,
+                    transcript_path=art_item.transcript_path,
+                    metadata=art_item.metadata,
+                )
             except Exception as e:
                 logger.debug(f"Download failed for {artifact_id}: {e}")

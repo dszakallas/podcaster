@@ -9,7 +9,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import yaml
 
@@ -195,14 +195,15 @@ def task(task_name: str, logger: logging.Logger):
 
 
 def load_config():
-    from .config import AppConfig
+    from .config import AppConfig, resolve_refs
 
     config_path = Path("podcaster.yaml")
     data = {}
     if config_path.exists():
         with open(config_path, "r") as f:
             data = yaml.safe_load(f) or {}
-    return AppConfig.model_validate(data)
+    config = AppConfig.model_validate(data)
+    return resolve_refs(config)
 
 
 def get_storage_path() -> str:
@@ -232,9 +233,6 @@ def get_notebook_dir_name(
     return f"{name} [nlm_{notebook_id}]"
 
 
-DEFAULT_PODCAST_DIR = "podcasts"
-
-
 def find_notebook_dir(base_dir: str, notebook_id: str) -> Optional[str]:
     """Find an existing notebook directory by matching the [nlm_id] suffix."""
     if not os.path.exists(base_dir):
@@ -246,6 +244,14 @@ def find_notebook_dir(base_dir: str, notebook_id: str) -> Optional[str]:
         if os.path.isdir(full_path) and entry.endswith(suffix):
             return entry
     return None
+
+
+def resolve_notebook_dir_path(notebook_id: str, podcast_dir: str) -> Path:
+    """Resolve the local storage directory path for a notebook ID, raising ValueError if not found."""
+    notebook_dir_name = find_notebook_dir(podcast_dir, notebook_id)
+    if not notebook_dir_name:
+        raise ValueError(f"Could not find directory for notebook ID: {notebook_id}")
+    return Path(podcast_dir) / notebook_dir_name
 
 
 def get_or_create_notebook_dir(
@@ -401,9 +407,20 @@ class RetryingResourceWrapper:
         return attr
 
 
+DEFAULT_CLIENT_TIMEOUT = 120.0
+
+
 class RetryingNotebookLMClient:
+    notebooks: Any
+    sources: Any
+    artifacts: Any
+    research: Any
+    chat: Any
+
     @classmethod
-    async def from_storage(cls, storage_path, timeout=120.0, logger=None):
+    async def from_storage(
+        cls, storage_path, timeout=DEFAULT_CLIENT_TIMEOUT, logger=None
+    ):
         from notebooklm import NotebookLMClient
 
         client = await NotebookLMClient.from_storage(storage_path, timeout=timeout)
@@ -424,4 +441,24 @@ class RetryingNotebookLMClient:
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        return await self._client.__aexit__(exc_type, exc_val, exc_tb)
+        try:
+            return await self._client.__aexit__(exc_type, exc_val, exc_tb)
+        except Exception as e:
+            if exc_type is not None:
+                self._logger.debug(
+                    f"Suppressed exception raised during client close(): {e}"
+                )
+                return False
+            raise
+
+
+@contextlib.asynccontextmanager
+async def get_notebooklm_client(
+    timeout: float = DEFAULT_CLIENT_TIMEOUT, logger: Optional[logging.Logger] = None
+):
+    """Async context manager for creating and managing a RetryingNotebookLMClient."""
+    storage_path = get_storage_path()
+    async with await RetryingNotebookLMClient.from_storage(
+        storage_path, timeout=timeout, logger=logger
+    ) as client:
+        yield client

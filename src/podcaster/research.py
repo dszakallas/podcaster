@@ -2,24 +2,56 @@ import asyncio
 import json
 import logging
 import os
-import random
 import re
 import tempfile
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, AsyncGenerator, Callable, List, Optional, Union
+from typing import Any, AsyncGenerator, AsyncIterable, Callable, List, Optional
 
-from .config import AppConfig, ImporterConfig, Ref
+from .config import ImporterConfig, MaybeRef, ScraperConfig
+from .models import ResearchResult, ResearchTask, TaskStatus
 from .utils import (
     RetryingNotebookLMClient,
-    get_storage_path,
-    load_config,
+    get_notebooklm_client,
     parse_duration_minutes,
     sanitize,
-    setup_logging,
 )
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_SCRAPER_TOOL = "playwright"
+DEFAULT_IMPORTER_KEY = "default"
+DEFAULT_RESEARCH_TOPIC = "general"
+DEFAULT_RESEARCH_DURATION = "20 minutes"
+
+SCRAPER_PROMPT_TEMPLATE = (
+    'Use the {{ tool }} MCP tool to navigate to the URL "{{ url }}". '
+    "If you encounter bot detection, cookie consent banners, paywalls, or blank pages, attempt to bypass them. "
+    "Useful techniques include: waiting for elements, dismissing cookie/consent popups, scrolling the page "
+    "naturally, and emulating a common device viewport or user agent if supported by the tool. "
+    "If the article is locked behind a paywall (such as if the article text does not show at all, is abruptly ending in the middle, "
+    "or displays a callout to login/register to view the full content), bail out immediately and return a JSON object with an error key. "
+    "Extract the article content, title, author, and creation date. "
+    "In addition, find all hyperlinks within the article body that are "
+    "useful for content enrichment. Extract 3-5 keywords summarizing the article's topics, and find "
+    "the publication date. Close the browser tab when finished. "
+    "Finally, respond with a single, valid NDJSON object on a single line without whitespace in this exact "
+    "emulating what a real user would do as an anti-bot evasion measure. Make sure that the browser is closed in the end. "
+    "IMPORTANT OUTPUT REQUIREMENTS, YOU MUST ADHERE: "
+    "On success, respond with a single, valid NDJSON object on a single line without whitespace on this exact "
+    'format: {"url":"...","title":"...","author":"...","created_at":"<date>","content":"<extracted content>","links":[...],"keywords":[...]}. '
+    "On failure respond with with a single, valid NDJSON object on a single line without whitespace on this exact "
+    'format: {"error":"<error description>"}. '
+    "Your response must be a valid NDJSON at all times, DO NOT INCLUDE ANY OTHER TEXT, MARKDOWN, ETC IN YOUR RESPONSE."
+)
+
+RESEARCH_SUMMARY_PROMPT = (
+    "1. Summarize this source in exactly one sentence with dates for important events.\n"
+    "2. Suggest a duration for a deep-dive podcast about this article. "
+    "Reply with a plain duration string like '15 minutes' or '1 hour 5 minutes'. "
+    "Typical range: 10–45 minutes.\n"
+    'Respond in NDJSON format: {"summary": "...", "suggested_duration": "..."}'
+)
 
 
 def normalize_source(source: str) -> str:
@@ -177,68 +209,27 @@ class ChainImporter(Importer):
         }
 
 
-def build_importer(
-    importer_input: Union[str, Ref[ImporterConfig], ImporterConfig, None] = None,
-    config: Optional[AppConfig] = None,
-    visited_refs: Optional[set[str]] = None,
-) -> Importer:
+def build_importer(importer_cfg: ImporterConfig) -> Importer:
     """Constructs a concrete Importer (NativeImporter, ScraperImporter, or ChainImporter)
-    from an importer name, Ref[ImporterConfig], or ImporterConfig.
+    from a resolved ImporterConfig.
     """
-    if visited_refs is None:
-        visited_refs = set()
+    match_rules = importer_cfg.match if importer_cfg.match else [".*"]
 
-    importers_dict = config.importers if config else {}
-
-    importer_cfg: Optional[ImporterConfig] = None
-    override_match: Optional[List[str]] = None
-
-    if isinstance(importer_input, str) or importer_input is None:
-        name = importer_input or "default"
-        if name in visited_refs:
-            raise ValueError(f"Circular reference detected in importers: {name}")
-        if name not in importers_dict:
-            raise ValueError(f"Importer '{name}' not found in configuration.")
-        visited_refs.add(name)
-        importer_cfg = importers_dict[name]
-    elif isinstance(importer_input, Ref):
-        if importer_input.ref:
-            ref = importer_input.ref
-            if ref in visited_refs:
-                raise ValueError(f"Circular reference detected in importers: {ref}")
-            if ref not in importers_dict:
-                raise ValueError(f"Importer '{ref}' not found in configuration.")
-            visited_refs.add(ref)
-            importer_cfg = importers_dict[ref]
-        override_match = importer_input.match
-    elif isinstance(importer_input, ImporterConfig):
-        importer_cfg = importer_input
-        override_match = importer_input.match
-    else:
-        raise ValueError(f"Invalid importer input type: {type(importer_input)}")
-
-    match_rules = (
-        override_match
-        if override_match is not None
-        else (importer_cfg.match if importer_cfg and importer_cfg.match else [".*"])
-    )
-
-    if importer_cfg and importer_cfg.native:
+    if importer_cfg.native:
         return NativeImporter(
             config=importer_cfg.native,
             match_expressions=match_rules,
         )
-    elif importer_cfg and importer_cfg.scraper:
+    elif importer_cfg.scraper:
         return ScraperImporter(
             config=importer_cfg.scraper,
             match_expressions=match_rules,
         )
-    elif importer_cfg and importer_cfg.chain:
-        chain_cfg = importer_cfg.chain
-        sub_refs = chain_cfg.importers if chain_cfg else []
+    elif importer_cfg.chain:
         sub_importers = [
-            build_importer(sub_ref, config, visited_refs=set(visited_refs))
-            for sub_ref in sub_refs
+            build_importer(sub)
+            for sub in importer_cfg.chain.importers
+            if isinstance(sub, ImporterConfig)
         ]
         return ChainImporter(
             importers=sub_importers,
@@ -246,20 +237,23 @@ def build_importer(
         )
     else:
         raise ValueError(
-            f"Could not construct Importer from importer configuration: {importer_input}"
+            f"Could not construct Importer from importer configuration: {importer_cfg}"
         )
 
 
 async def execute_importer(
-    importer_input: Any = None,
+    importer: MaybeRef[ImporterConfig],
     notebook_id: str = "",
     source: str = "",
     title: Optional[str] = None,
     client: Optional[RetryingNotebookLMClient] = None,
 ) -> dict:
     """Executes an importer on a source string using the Importer interface."""
-    config = load_config()
-    importer_obj = build_importer(importer_input, config)
+    if not isinstance(importer, ImporterConfig):
+        raise ValueError(
+            f"A resolved ImporterConfig must be provided to execute_importer, got: {type(importer)}"
+        )
+    importer_obj = build_importer(importer)
     return await importer_obj.execute(notebook_id, source, title=title, client=client)
 
 
@@ -269,62 +263,29 @@ async def scrape_source(
     command: Optional[str] = None,
     args: Optional[List[str]] = None,
     dry_run: bool = False,
+    scraper_config: Optional[ScraperConfig] = None,
 ) -> Optional[dict]:
     """Scrapes a URL and returns the parsed agent metadata and content dictionary."""
     from jinja2 import Template
 
-    config = load_config()
-
-    if tool is None or command is None:
-        scraper_def = None
-        if "default" in config.scrapers:
-            scraper_def = config.scrapers["default"]
-        elif config.scrapers:
-            scraper_def = next(iter(config.scrapers.values()))
-
-        if tool is None and scraper_def:
-            tool = scraper_def.tool
-
-        if command is None and scraper_def and scraper_def.agent:
-            ag = scraper_def.agent
-            if ag.ref and ag.ref in config.agents:
-                agent_def = config.agents[ag.ref]
-                command = agent_def.command
-                args = agent_def.args
-            elif ag.command:
-                command = ag.command
-                args = ag.args or []
+    if scraper_config:
+        tool = tool or scraper_config.tool
+        if scraper_config.agent:
+            ag = scraper_config.agent
+            command = command or ag.command
+            args = args or ag.args or []
 
     if tool is None:
-        tool = "playwright"
+        tool = DEFAULT_SCRAPER_TOOL
 
     if command is None:
-        agent_command = "gemini"
-        agent_args = ["-p", "{{ prompt }}"]
-    else:
-        agent_command = command
-        agent_args = args or []
+        raise ValueError(
+            "No scraper agent command specified or configured in podcaster.yaml"
+        )
+    agent_command = command
+    agent_args = args or []
 
-    prompt = (
-        f'Use the {tool} MCP tool to navigate to the URL "{url}". '
-        "If you encounter bot detection, cookie consent banners, paywalls, or blank pages, attempt to bypass them. "
-        "Useful techniques include: waiting for elements, dismissing cookie/consent popups, scrolling the page "
-        "naturally, and emulating a common device viewport or user agent if supported by the tool. "
-        "If the article is locked behind a paywall (such as if the article text does not show at all, is abruptly ending in the middle, "
-        "or displays a callout to login/register to view the full content), bail out immediately and return a JSON object with an error key. "
-        "Extract the article content, title, author, and creation date. "
-        "In addition, find all hyperlinks within the article body that are "
-        "useful for content enrichment. Extract 3-5 keywords summarizing the article's topics, and find "
-        "the publication date. Close the browser tab when finished. "
-        "Finally, respond with a single, valid NDJSON object on a single line without whitespace in this exact "
-        "emulating what a real user would do as an anti-bot evasion measure. Make sure that the browser is closed in the end. "
-        "IMPORTANT OUTPUT REQUIREMENTS, YOU MUST ADHERE: "
-        "On success, respond with a single, valid NDJSON object on a single line without whitespace on this exact "
-        'format: {"url":"...","title":"...","author":"...","created_at":"<date>","content":"<extracted content>","links":[...],"keywords":[...]}. '
-        "On failure respond with with a single, valid NDJSON object on a single line without whitespace on this exact "
-        'format: {"error":"<error description>"}. '
-        "Your response must be a valid NDJSON at all times, DO NOT INCLUDE ANY OTHER TEXT, MARKDOWN, ETC IN YOUR RESPONSE."
-    )
+    prompt = Template(SCRAPER_PROMPT_TEMPLATE).render(tool=tool, url=url)
 
     logger.info(f"Scraping URL via {agent_command}: {url}")
 
@@ -477,7 +438,8 @@ async def _import_native(
             )
 
         logger.debug(f"Native import: Google Drive file ID {file_id}")
-        src_obj = await client.sources.add_drive(
+        client_any: Any = client
+        src_obj = await client_any.sources.add_drive(
             notebook_id,
             file_id,
             title=title or "Drive Source",
@@ -490,17 +452,20 @@ async def _import_native(
     if clean_path.startswith("file://"):
         clean_path = clean_path[7:]
 
-    if os.path.exists(clean_path):
+    client_any: Any = client
+    if clean_path and os.path.isfile(clean_path):
         logger.debug(f"Native import: Local file {clean_path}")
-        src_obj = await client.sources.add_file(
+        src_obj = await client_any.sources.add_file(
             notebook_id, clean_path, wait=True, wait_timeout=600.0
         )
         return src_obj.id
 
     if source.startswith(("http://", "https://")):
         logger.debug(f"Native import: Web URL {source}")
-        src_obj = await client.sources.add_url(notebook_id, source, wait=False)
-        await client.sources.wait_until_ready(notebook_id, src_obj.id, timeout=600.0)
+        src_obj = await client_any.sources.add_url(notebook_id, source, wait=False)
+        await client_any.sources.wait_until_ready(
+            notebook_id, src_obj.id, timeout=600.0
+        )
         return src_obj.id
 
     raise ValueError(f"Native importer cannot handle source format: {source}")
@@ -523,47 +488,7 @@ async def _import_scraper(
     ):
         raise ValueError(f"Scraper handler only supports web URLs, got: {source}")
 
-    tool = None
-    command = None
-    args = None
-    config = load_config()
-
-    if scraper_config:
-        scraper_def = None
-        ref = scraper_config.ref
-        if ref and ref in config.scrapers:
-            scraper_def = config.scrapers[ref]
-        elif ref and ref in config.agents:
-            agent_def = config.agents[ref]
-            command = agent_def.command
-            args = agent_def.args
-
-        if scraper_def:
-            tool = scraper_def.tool
-            if scraper_def.agent:
-                ag = scraper_def.agent
-                if ag.ref and ag.ref in config.agents:
-                    agent_def = config.agents[ag.ref]
-                    command = agent_def.command
-                    args = agent_def.args
-                elif ag.command:
-                    command = ag.command
-                    args = ag.args or []
-
-        if scraper_config.tool:
-            tool = scraper_config.tool
-
-        ag_inline = scraper_config.agent
-        if ag_inline:
-            if ag_inline.ref and ag_inline.ref in config.agents:
-                agent_def = config.agents[ag_inline.ref]
-                command = agent_def.command
-                args = agent_def.args
-            elif ag_inline.command:
-                command = ag_inline.command
-                args = ag_inline.args or []
-
-    res = await scrape_source(source, tool=tool, command=command, args=args)
+    res = await scrape_source(source, scraper_config=scraper_config)
     if not res or not res.get("content"):
         error_msg = res.get("error") if res else "No response"
         raise RuntimeError(f"Scraping returned no content: {error_msg}")
@@ -587,7 +512,8 @@ async def _import_scraper(
         with open(temp_filepath, "w", encoding="utf-8") as f:
             f.write(file_content)
 
-        src_obj = await client.sources.add_file(
+        client_any: Any = client
+        src_obj = await client_any.sources.add_file(
             notebook_id, temp_filepath, wait=True, wait_timeout=600.0
         )
         return src_obj.id
@@ -596,7 +522,7 @@ async def _import_scraper(
 async def import_source(
     notebook_id: str,
     source: str,
-    importer: Optional[Union[str, Any]] = "default",
+    importer: MaybeRef[ImporterConfig],
     title: Optional[str] = None,
     client: Optional[RetryingNotebookLMClient] = None,
 ) -> dict:
@@ -608,10 +534,7 @@ async def import_source(
             importer, notebook_id, source, title=title, client=client
         )
 
-    storage_path = get_storage_path()
-    async with await RetryingNotebookLMClient.from_storage(
-        storage_path, timeout=120.0
-    ) as c:
+    async with get_notebooklm_client() as c:
         return await execute_importer(
             importer, notebook_id, source, title=title, client=c
         )
@@ -620,13 +543,8 @@ async def import_source(
 async def import_web_source(
     notebook_id: str,
     url: str,
-    unimportables: Optional[List[re.Pattern]] = None,
-    fallback_mode: str = "scrape",
+    importer: MaybeRef[ImporterConfig],
     title: Optional[str] = None,
-    tool: Optional[str] = None,
-    command: Optional[str] = None,
-    args: Optional[List[str]] = None,
-    importer: str = "default",
 ) -> dict:
     """Delegates to import_source for generalized importing with fallback."""
     return await import_source(notebook_id, url, importer=importer, title=title)
@@ -636,18 +554,16 @@ async def create_research_job(
     notebook_id: str,
     source_id: str,
     mode: str = "fast",
-) -> dict:
-    storage_path = get_storage_path()
-    async with await RetryingNotebookLMClient.from_storage(
-        storage_path, timeout=120.0
-    ) as client:
+) -> ResearchTask:
+    async with get_notebooklm_client() as raw_client:
+        client: Any = raw_client
         # 1. Fetch source guide for keywords
         logger.debug(f"Fetching guide for source {source_id}...")
         guide = await client.sources.get_guide(notebook_id, source_id)
-        keywords = guide.get("keywords", [])
+        keywords = guide.get("keywords", []) if isinstance(guide, dict) else []
         if not keywords:
             logger.debug(f"No keywords found in guide for source {source_id}.")
-            topic = "general"  # Fallback topic
+            topic = DEFAULT_RESEARCH_TOPIC  # Fallback topic
         else:
             topic = ", ".join(keywords)
 
@@ -655,20 +571,14 @@ async def create_research_job(
         logger.debug(
             f"Generating summary and duration suggestion for source {source_id}..."
         )
-        summary_q = (
-            "1. Summarize this source in exactly one sentence with dates for important events.\n"
-            "2. Suggest a duration for a deep-dive podcast about this article. "
-            "Reply with a plain duration string like '15 minutes' or '1 hour 5 minutes'. "
-            "Typical range: 10–45 minutes.\n"
-            'Respond in NDJSON format: {"summary": "...", "suggested_duration": "..."}'
-        )
-        summary_res = await client.chat.ask(
+        summary_q = RESEARCH_SUMMARY_PROMPT
+        summary_res: Any = await client.chat.ask(
             notebook_id, summary_q, source_ids=[source_id]
         )
 
         try:
             # Find the JSON block in the answer
-            answer_text = summary_res.answer
+            answer_text = str(getattr(summary_res, "answer", summary_res))
             match = re.search(r"\{.*\}", answer_text, re.DOTALL)
             if match:
                 data = json.loads(match.group(0))
@@ -681,64 +591,70 @@ async def create_research_job(
             logger.warning(
                 "Failed to parse summary and duration from response, using defaults."
             )
-            summary = summary_res.answer
+            summary = str(getattr(summary_res, "answer", summary_res))
             suggested_duration = ""
 
         if not suggested_duration or parse_duration_minutes(suggested_duration) is None:
             logger.warning(
-                f"Could not parse suggested duration {suggested_duration!r}, defaulting to 20 minutes."
+                f"Could not parse suggested duration {suggested_duration!r}, defaulting to {DEFAULT_RESEARCH_DURATION}."
             )
-            suggested_duration = "20 minutes"
+            suggested_duration = DEFAULT_RESEARCH_DURATION
 
         # 3. Assemble research prompt
         prompt = f"Topic: {topic}. Context: {summary}"
         logger.debug(f"Starting research with prompt: {prompt} (mode: {mode})")
 
         # 4. Start research
-        job = await client.research.start(notebook_id, prompt, mode=mode)
+        job: Any = await client.research.start(notebook_id, prompt, mode=mode)
         if not job:
             raise RuntimeError("Failed to start research job.")
 
-        task_id = job.get("task_id")
+        task_id = (
+            job.get("task_id") if isinstance(job, dict) else getattr(job, "task_id", "")
+        ) or ""
 
-        return {
-            "notebook_id": notebook_id,
-            "source_id": source_id,
-            "task_id": task_id,
-            "topic": topic,
-            "summary": summary,
-            "suggested_duration": suggested_duration,
-            "status": "pending",
-            "type": "research",
-        }
+        return ResearchTask(
+            notebook_id=notebook_id,
+            source_id=source_id,
+            task_id=task_id,
+            topic=topic,
+            summary=summary,
+            suggested_duration=suggested_duration,
+        )
 
 
 async def poll_research_jobs(
-    tasks: AsyncGenerator[dict, None],
-    max_imports: Optional[int] = None,
-    ignore_errors: bool = False,
-    fallback_mechanism: str = "ignore",
-) -> AsyncGenerator[dict, None]:
-    storage_path = get_storage_path()
-    async with await RetryingNotebookLMClient.from_storage(
-        storage_path, timeout=120.0
-    ) as client:
-        async for task in tasks:
-            notebook_id = task["notebook_id"]
-            task_id = task["task_id"]
+    tasks: AsyncIterable[ResearchTask],
+    fallback_importer: Optional[MaybeRef[ImporterConfig]] = None,
+    max_import_failures: Optional[int] = None,
+) -> AsyncGenerator[ResearchResult, None]:
+    async with get_notebooklm_client() as raw_client:
+        client: Any = raw_client
+        async for t in tasks:
+            notebook_id = t.notebook_id
+            task_id = t.task_id
 
             # 5. Poll for completion
             while True:
-                res = await client.research.poll(notebook_id)
-                status = res.get("status")
+                res: Any = await client.research.poll(notebook_id)
+                status = (
+                    res.get("status")
+                    if isinstance(res, dict)
+                    else getattr(res, "status", None)
+                )
                 logger.debug(f"Research status: {status}")
 
-                if status == "completed" or (
-                    status == "in_progress" and len(res.get("sources", [])) > 0
+                sources_list_raw = (
+                    res.get("sources", [])
+                    if isinstance(res, dict)
+                    else getattr(res, "sources", [])
+                )
+                if status == TaskStatus.COMPLETED or (
+                    status == TaskStatus.IN_PROGRESS and len(sources_list_raw) > 0
                 ):
-                    found_sources = res.get("sources", [])
+                    found_sources = sources_list_raw
                     break
-                elif status == "failed":
+                elif status == TaskStatus.FAILED:
                     raise RuntimeError(f"Research job failed: {res}")
                 elif status == "no_research":
                     logger.warning(
@@ -753,126 +669,152 @@ async def poll_research_jobs(
 
             # 6. Select sources to import
             sources_to_import = found_sources
-            if max_imports is not None and len(found_sources) > max_imports:
-                sources_to_import = random.sample(found_sources, max_imports)
-                logger.debug(
-                    f"Randomly selected {len(sources_to_import)} sources to import."
-                )
 
             # 7. Import sources
             imported = []
+            failed_imports_count = 0
             if sources_to_import:
                 logger.debug(f"Importing {len(sources_to_import)} sources...")
                 for src in sources_to_import:
-                    src_url = src.get("url") if isinstance(src, dict) else str(src)
+                    src_url = str(
+                        src.get("url") if isinstance(src, dict) else src or ""
+                    )
+                    import_success = False
                     try:
-                        single_imported = await client.research.import_sources(
+                        single_imported: Any = await client.research.import_sources(
                             notebook_id, task_id, [src]
                         )
-                        imported.extend(single_imported)
+                        if isinstance(single_imported, list) and single_imported:
+                            imported.extend(single_imported)
+                            import_success = True
+                        elif single_imported:
+                            imported.append(single_imported)
+                            import_success = True
                     except Exception as e:
                         logger.warning(
                             f"NotebookLM import failed for research source '{src_url}': {e}"
                         )
-                        if fallback_mechanism != "ignore":
-                            try:
-                                imp_res = await import_source(
-                                    notebook_id,
-                                    src_url,
-                                    importer=fallback_mechanism,
-                                    client=client,
-                                )
-                                if imp_res.get("source_id"):
-                                    imported.append(
-                                        {"id": imp_res["source_id"], "url": src_url}
-                                    )
-                                else:
-                                    logger.warning(
-                                        f"Fallback import failed for '{src_url}': {imp_res.get('error')}"
-                                    )
-                            except Exception as fe:
-                                logger.warning(
-                                    f"Fallback import exception for '{src_url}': {fe}"
-                                )
-                        else:
-                            logger.info(f"Ignoring failed research source: {src_url}")
-                            try:
-                                sources_list = await client.sources.list(notebook_id)
-                                for existing_src in sources_list or []:
-                                    src_u = (
-                                        existing_src.url
-                                        if hasattr(existing_src, "url")
-                                        and existing_src.url
-                                        else existing_src.title
-                                    )
-                                    src_status = (
-                                        existing_src.status
-                                        if hasattr(existing_src, "status")
-                                        else None
-                                    )
-                                    if src_u == src_url or src_status == "error":
-                                        logger.info(
-                                            f"Removing failed/errored source from NotebookLM: {existing_src.id}"
-                                        )
-                                        await client.sources.delete(
-                                            notebook_id, existing_src.id
-                                        )
-                            except Exception as delete_err:
-                                logger.debug(
-                                    f"Error checking/deleting failed source: {delete_err}"
-                                )
 
-            yield {
-                **task,
-                "status": "completed",
-                "found_count": len(found_sources),
-                "imported_count": len(imported),
-                "imported": imported,
-            }
+                    if not import_success and fallback_importer is not None:
+                        try:
+                            imp_res = await import_source(
+                                notebook_id,
+                                src_url,
+                                importer=fallback_importer,
+                                client=client,
+                            )
+                            if imp_res.get("source_id"):
+                                imported.append(
+                                    {"id": imp_res["source_id"], "url": src_url}
+                                )
+                                import_success = True
+                            else:
+                                logger.warning(
+                                    f"Fallback import failed for '{src_url}': {imp_res.get('error')}"
+                                )
+                        except Exception as fe:
+                            logger.warning(
+                                f"Fallback import exception for '{src_url}': {fe}"
+                            )
+
+                    if not import_success:
+                        failed_imports_count += 1
+                        logger.info(
+                            f"Ignoring/cleaning up failed research source: {src_url}"
+                        )
+                        try:
+                            sources_list: Any = await client.sources.list(notebook_id)
+                            for existing_src in sources_list or []:
+                                src_u = (
+                                    existing_src.url
+                                    if hasattr(existing_src, "url") and existing_src.url
+                                    else getattr(existing_src, "title", "")
+                                )
+                                src_status = (
+                                    existing_src.status
+                                    if hasattr(existing_src, "status")
+                                    else None
+                                )
+                                if src_u == src_url or src_status == "error":
+                                    logger.info(
+                                        f"Removing failed/errored source from NotebookLM: {existing_src.id}"
+                                    )
+                                    await client.sources.delete(
+                                        notebook_id, existing_src.id
+                                    )
+                        except Exception as delete_err:
+                            logger.debug(
+                                f"Error checking/deleting failed source: {delete_err}"
+                            )
+
+                        if (
+                            max_import_failures is not None
+                            and failed_imports_count > max_import_failures
+                        ):
+                            raise RuntimeError(
+                                f"Research import failed: {failed_imports_count} failed import(s) exceeded max_import_failures limit ({max_import_failures})."
+                            )
+
+            yield ResearchResult(
+                notebook_id=t.notebook_id,
+                source_id=t.source_id,
+                task_id=t.task_id,
+                topic=t.topic,
+                summary=t.summary,
+                suggested_duration=t.suggested_duration,
+                status=TaskStatus.COMPLETED,
+                found_count=len(found_sources),
+                imported_count=len(imported),
+                imported=imported,
+            )
 
 
 async def research_from_source(
     notebook_id: str,
     source_id: str,
     mode: str = "fast",
-    max_imports: Optional[int] = None,
-    verbose: bool = False,
     task_id: Optional[str] = None,
     topic: Optional[str] = None,
     summary: Optional[str] = None,
     suggested_duration: Optional[str] = None,
     on_start_callback: Optional[Callable[[str, str, str, str], Any]] = None,
-    ignore_errors: bool = False,
-    fallback_mechanism: str = "ignore",
-) -> dict:
-    if verbose:
-        setup_logging(verbose)
+    fallback_importer: Optional[MaybeRef[ImporterConfig]] = None,
+    max_import_failures: Optional[int] = None,
+) -> ResearchResult:
 
     if not task_id:
         task = await create_research_job(notebook_id, source_id, mode)
-        task_id = task["task_id"]
-        topic = task["topic"]
-        summary = task["summary"]
-        suggested_duration = task["suggested_duration"]
+        task_id = task.task_id
+        topic = task.topic
+        summary = task.summary
+        suggested_duration = task.suggested_duration
         if on_start_callback:
-            await on_start_callback(task_id, topic, summary, suggested_duration)
+            cb_res = on_start_callback(task_id, topic, summary, suggested_duration)
+            if asyncio.iscoroutine(cb_res) or hasattr(cb_res, "__await__"):
+                await cb_res
+
+    assert task_id is not None
+    assert topic is not None
+    assert summary is not None
+    assert suggested_duration is not None
+
+    task_obj = ResearchTask(
+        notebook_id=notebook_id,
+        source_id=source_id,
+        task_id=task_id,
+        topic=topic,
+        summary=summary,
+        suggested_duration=suggested_duration,
+    )
 
     async def task_gen():
-        yield {
-            "notebook_id": notebook_id,
-            "source_id": source_id,
-            "task_id": task_id,
-            "topic": topic,
-            "summary": summary,
-            "suggested_duration": suggested_duration,
-        }
+        yield task_obj
 
     res = None
     async for r in poll_research_jobs(
         task_gen(),
-        max_imports,
-        ignore_errors=ignore_errors,
-        fallback_mechanism=fallback_mechanism,
+        fallback_importer=fallback_importer,
+        max_import_failures=max_import_failures,
     ):
         res = r
     if res is None:

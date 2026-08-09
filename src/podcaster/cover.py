@@ -1,59 +1,66 @@
 import asyncio
-import io
 import logging
 import os
-import time
-from typing import Any, AsyncGenerator, Callable, Optional
+from typing import Any, AsyncGenerator, AsyncIterable, Callable, Optional
 
 from google import genai
 from google.genai import types
 from notebooklm.exceptions import NotebookNotFoundError
 from PIL import Image
 
+from .models import CoverTask, TaskStatus
 from .utils import (
-    RetryingNotebookLMClient,
+    get_notebooklm_client,
     get_or_create_notebook_dir,
-    get_storage_path,
-    load_config,
     retry_rpc,
 )
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_COVER_MODEL = "gemini-3.1-flash-image"
+POLL_INTERVAL_SECONDS = 15
+
+COVER_PROMPT_TEMPLATE = (
+    "Based on this notebook summary, create a prompt for generating a podcast album cover. "
+    "The title of the podcast is '{{ title }}'. Please ensure the prompt instructs the generator "
+    "to include the text '{{ title }}' clearly as the title on the cover. Summary: {{ summary }}. "
+    "Generate ONLY one prompt, nothing else."
+)
+
 
 async def create_cover_job(
     notebook_id: str, image_gen_prompt: Optional[str] = None
-) -> dict:
-    storage_path = get_storage_path()
-    async with await RetryingNotebookLMClient.from_storage(
-        storage_path, timeout=120.0
-    ) as client:
+) -> CoverTask:
+    async with get_notebooklm_client() as client:
         try:
             notebook = await client.notebooks.get(notebook_id)
         except NotebookNotFoundError as e:
             raise ValueError(f"Notebook {notebook_id} not found") from e
 
         if not image_gen_prompt:
+            from jinja2 import Template
+
             summary = await client.notebooks.get_summary(notebook_id)
-            chat_prompt = f"Based on this notebook summary, create a prompt for generating a podcast album cover. The title of the podcast is '{notebook.title}'. Please ensure the prompt instructs the generator to include the text '{notebook.title}' clearly as the title on the cover. Summary: {summary}. Generate ONLY one prompt, nothing else."
+            chat_prompt = Template(COVER_PROMPT_TEMPLATE).render(
+                title=notebook.title, summary=summary
+            )
             image_gen_result = await client.chat.ask(notebook_id, chat_prompt)
             image_gen_prompt = image_gen_result.answer
 
-        logger.debug(f"Generated prompt for image: {image_gen_prompt}")
+        prompt_str = image_gen_prompt or ""
+        logger.debug(f"Generated prompt for image: {prompt_str}")
 
         genai_client = genai.Client()
         logger.debug("Submitting batch job for image generation...")
 
-        batch_job = await retry_rpc(
+        batch_job: Any = await retry_rpc(
             genai_client.batches.create,
-            model="gemini-3.1-flash-image",
+            model=DEFAULT_COVER_MODEL,
             src=[
                 types.InlinedRequest(
-                    model="gemini-3.1-flash-image",
+                    model=DEFAULT_COVER_MODEL,
                     contents=[
-                        types.Content(
-                            parts=[types.Part(text=image_gen_prompt)], role="user"
-                        )
+                        types.Content(parts=[types.Part(text=prompt_str)], role="user")
                     ],
                     config=types.GenerateContentConfig(
                         response_modalities=["IMAGE"],
@@ -64,64 +71,63 @@ async def create_cover_job(
             logger=logger,
         )
 
-        return {
-            "notebook_id": notebook_id,
-            "task_id": batch_job.name,
-            "image_gen_prompt": image_gen_prompt,
-            "status": "pending",
-            "type": "cover",
-        }
+        return CoverTask(
+            notebook_id=notebook_id,
+            task_id=batch_job.name,
+            image_gen_prompt=prompt_str,
+            status=TaskStatus.PENDING,
+        )
 
 
 async def poll_cover_jobs(
-    tasks: AsyncGenerator[dict, None],
-) -> AsyncGenerator[dict, None]:
+    tasks: AsyncIterable[CoverTask],
+) -> AsyncGenerator[CoverTask, None]:
     genai_client = genai.Client()
-    async for task in tasks:
-        task_id = task["task_id"]
+    async for t in tasks:
+        task_id = t.task_id
         logger.debug(f"Polling batch job: {task_id}")
         while True:
-            job = await retry_rpc(genai_client.batches.get, name=task_id, logger=logger)
+            job: Any = await retry_rpc(
+                genai_client.batches.get, name=task_id, logger=logger
+            )
             state_str = str(job.state)
             if "SUCCEEDED" in state_str:
-                yield {**task, "status": "completed"}
+                yield t.model_copy(update={"status": TaskStatus.COMPLETED})
                 break
             elif "FAILED" in state_str or "CANCELLED" in state_str:
                 error_msg = str(job.error) if job.error else "Job failed/cancelled"
-                yield {**task, "status": "failed", "error": error_msg}
+                yield t.model_copy(
+                    update={"status": TaskStatus.FAILED, "error": error_msg}
+                )
                 break
-            await asyncio.sleep(15)
+            await asyncio.sleep(POLL_INTERVAL_SECONDS)
 
 
 async def download_cover_jobs(
-    tasks: AsyncGenerator[dict, None], podcast_dir: Optional[str] = None
-) -> AsyncGenerator[dict, None]:
-    storage_path = get_storage_path()
-    config = load_config()
-    if not podcast_dir:
-        podcast_dir = config.podcast_dir
+    tasks: AsyncIterable[CoverTask], podcast_dir: str
+) -> AsyncGenerator[CoverTask, None]:
 
     genai_client = genai.Client()
 
-    async with await RetryingNotebookLMClient.from_storage(
-        storage_path, timeout=120.0
-    ) as client:
-        async for task in tasks:
-            if task.get("status") != "completed":
+    async with get_notebooklm_client() as client:
+        async for t in tasks:
+            if t.status != TaskStatus.COMPLETED:
                 logger.warning(
-                    f"Skipping download for cover task {task['task_id']} as status is not completed"
+                    f"Skipping download for cover task {t.task_id} as status is not completed"
                 )
                 continue
 
-            notebook_id = task["notebook_id"]
-            task_id = task["task_id"]
+            notebook_id = t.notebook_id
+            task_id = t.task_id
 
             try:
                 notebook = await client.notebooks.get(notebook_id)
             except NotebookNotFoundError as e:
                 raise ValueError(f"Notebook {notebook_id} not found") from e
 
-            job = await retry_rpc(genai_client.batches.get, name=task_id, logger=logger)
+            job: Any = await retry_rpc(
+                genai_client.batches.get, name=task_id, logger=logger
+            )
             if not job.dest or not job.dest.inlined_responses:
                 raise RuntimeError(
                     "Batch job succeeded but no results found in inlined_responses."
@@ -133,43 +139,37 @@ async def download_cover_jobs(
                     f"Batch job inlined response error: {inlined_res.error}"
                 )
 
-            response = inlined_res.response
-            if (
-                not response
-                or not response.candidates
-                or not response.candidates[0].content.parts
-            ):
-                raise RuntimeError("Batch job response is empty or has no candidates.")
-
-            image_part = response.candidates[0].content.parts[0]
-            if not image_part.inline_data:
-                raise RuntimeError(
-                    "Batch job response part does not contain inline_data."
-                )
-
-            image_bytes = image_part.inline_data.data
-            image = Image.open(io.BytesIO(image_bytes))
-
-            notebook_dir = get_or_create_notebook_dir(
-                podcast_dir, notebook_id, notebook.title, notebook.created_at
+            img_bytes = (
+                inlined_res.response.candidates[0].content.parts[0].inline_data.data
             )
 
-            timestamp = time.strftime("%Y%m%d_%H%M%S")
-            filename = f"album_cover_{timestamp}.png"
-            out_path = os.path.join(notebook_dir, filename)
-            image.save(out_path)
+            notebook_dir = get_or_create_notebook_dir(
+                podcast_dir,
+                notebook_id,
+                notebook.title if notebook else "NotebookLM Podcast",
+                notebook.created_at if notebook else None,
+            )
 
-            yield {
-                **task,
-                "path": out_path,
-                "filename": filename,
-                "status": "downloaded",
-            }
+            cover_path = os.path.join(notebook_dir, "cover.jpg")
+
+            with open(cover_path, "wb") as f:
+                f.write(img_bytes)
+
+            try:
+                with Image.open(cover_path) as img:
+                    img.verify()
+                logger.info(f"Verified cover image saved to: {cover_path}")
+            except Exception as e:
+                if os.path.exists(cover_path):
+                    os.remove(cover_path)
+                raise RuntimeError(f"Generated cover image is invalid: {e}") from e
+
+            yield t.model_copy(update={"cover_path": cover_path})
 
 
-async def generate_cover(
+async def generate_cover_for_notebook(
     notebook_id: str,
-    podcast_dir: Optional[str] = None,
+    podcast_dir: str,
     task_id: Optional[str] = None,
     image_gen_prompt: Optional[str] = None,
     on_start_callback: Optional[Callable[[str, str], Any]] = None,
@@ -177,26 +177,34 @@ async def generate_cover(
     # 1. Start cover job if not provided
     if not task_id:
         task = await create_cover_job(notebook_id, image_gen_prompt)
-        task_id = task["task_id"]
-        image_gen_prompt = task["image_gen_prompt"]
+        task_id = task.task_id
+        image_gen_prompt = task.image_gen_prompt
         if on_start_callback:
-            await on_start_callback(task_id, image_gen_prompt)
+            assert task_id is not None
+            assert image_gen_prompt is not None
+            cb_res = on_start_callback(task_id, image_gen_prompt)
+            if asyncio.iscoroutine(cb_res) or hasattr(cb_res, "__await__"):
+                await cb_res
+
+    assert task_id is not None
+    assert image_gen_prompt is not None
+    task_obj = CoverTask(
+        notebook_id=notebook_id,
+        task_id=task_id,
+        image_gen_prompt=image_gen_prompt,
+    )
 
     # 2. Poll cover job
     async def task_gen():
-        yield {
-            "task_id": task_id,
-            "notebook_id": notebook_id,
-            "image_gen_prompt": image_gen_prompt,
-        }
+        yield task_obj
 
     completed_task = None
     async for t in poll_cover_jobs(task_gen()):
         completed_task = t
 
-    if not completed_task or completed_task.get("status") != "completed":
+    if not completed_task or completed_task.status != TaskStatus.COMPLETED:
         raise RuntimeError(
-            f"Cover generation failed: {completed_task.get('error') if completed_task else 'Unknown error'}"
+            f"Cover generation failed: {completed_task.error if completed_task else 'Unknown error'}"
         )
 
     # 3. Download cover result
@@ -207,7 +215,7 @@ async def generate_cover(
     async for d in download_cover_jobs(completed_gen(), podcast_dir):
         downloaded = d
 
-    if not downloaded:
-        raise RuntimeError("Failed to download cover image.")
+    if not downloaded or not downloaded.cover_path:
+        raise RuntimeError("Failed to download generated cover image.")
 
-    return downloaded["path"]
+    return downloaded.cover_path

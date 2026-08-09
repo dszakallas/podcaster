@@ -4,21 +4,26 @@ from typing import Optional
 
 from notebooklm.exceptions import NotebookNotFoundError
 
+from .config import ImporterConfig, MaybeRef
 from .utils import (
-    RetryingNotebookLMClient,
+    get_notebooklm_client,
     get_or_create_notebook_dir,
-    get_storage_path,
-    load_config,
 )
 
 logger = logging.getLogger(__name__)
+
+FALLBACK_NOTEBOOK_TITLE = "Notebook"
+TITLE_SUGGESTION_PROMPT = (
+    "Based on the uploaded source, suggest a concise, catchy, and professional title for this notebook/podcast. "
+    "Do not include any markdown, formatting, introductory or concluding text, or any citations. Respond ONLY with the plain text suggested title."
+)
 
 
 async def upload_source(
     notebook_id: str,
     source_file: str,
+    importer: MaybeRef[ImporterConfig],
     title: Optional[str] = None,
-    importer: str = "default",
 ) -> str:
     """Uploads a source file or URL and waits for processing."""
     from . import research
@@ -37,11 +42,11 @@ async def upload_source(
 
 
 async def init_notebook(
+    podcast_dir: str,
+    importer: MaybeRef[ImporterConfig],
     title: Optional[str] = None,
     notebook_id: Optional[str] = None,
-    podcast_dir: Optional[str] = None,
     from_source: Optional[str] = None,
-    importer: str = "default",
 ) -> dict:
     """Initialize a notebook: creates/fetches a notebook and initializes its local directory.
 
@@ -49,16 +54,9 @@ async def init_notebook(
     directory, deriving the title after successful upload. If upload fails, the remote notebook
     is cleaned up (deleted) and an error is raised.
     """
-    storage_path = get_storage_path()
-
-    config = load_config()
-    if not podcast_dir:
-        podcast_dir = config.podcast_dir
 
     if from_source:
-        async with await RetryingNotebookLMClient.from_storage(
-            storage_path, timeout=120.0
-        ) as client:
+        async with get_notebooklm_client() as client:
             try:
                 logger.info("Creating remote notebook...")
                 notebook = await client.notebooks.create(title or "")
@@ -113,8 +111,7 @@ async def init_notebook(
                             logger.info("Prompting notebook to generate a title...")
                             chat_res = await client.chat.ask(
                                 created_notebook_id,
-                                "Based on the uploaded source, suggest a concise, catchy, and professional title for this notebook/podcast. "
-                                "Do not include any markdown, formatting, introductory or concluding text, or any citations. Respond ONLY with the plain text suggested title.",
+                                TITLE_SUGGESTION_PROMPT,
                                 source_ids=[source_id],
                             )
                             derived_title = (
@@ -126,7 +123,7 @@ async def init_notebook(
                             )
 
                     if not derived_title:
-                        derived_title = "Notebook"
+                        derived_title = FALLBACK_NOTEBOOK_TITLE
 
                     # Update remote notebook title with derived title so it's not empty
                     try:
@@ -176,9 +173,7 @@ async def init_notebook(
                 "Either title or notebook_id must be provided when not initializing from source."
             )
 
-        async with await RetryingNotebookLMClient.from_storage(
-            storage_path, timeout=120.0
-        ) as client:
+        async with get_notebooklm_client() as client:
             if notebook_id:
                 logger.debug(f"Fetching existing notebook: {notebook_id}")
                 try:

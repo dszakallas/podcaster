@@ -3,17 +3,29 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Any, Awaitable, Optional, Union
+from typing import Any, AsyncGenerator, Awaitable, Optional, Union
 
 from podcaster import cover, research, tagging, transcription
 from podcaster import notebook as notebook_mod
 from podcaster.audio_gen import core as audio_gen_core
-from podcaster.config import DistributionRef, TaggingConfig
+from podcaster.config import (
+    DeepDiveArticleConfig,
+    ImporterConfig,
+    MaybeRef,
+    PodcastTagsConfig,
+    PodcastTranscriptionConfig,
+    TaggingConfig,
+)
+from podcaster.models import (
+    PodcastGenArtifact,
+    PodcastGenTask,
+    TaskStatus,
+    TranscriptionTask,
+)
 from podcaster.utils import (
-    DEFAULT_PODCAST_DIR,
     find_notebook_dir,
-    load_config,
     log_task,
+    parse_duration_minutes,
     resolve_duration,
     task,
 )
@@ -30,21 +42,24 @@ from .state import (
 logger = logging.getLogger(__name__)
 
 
+async def _single_artifact_stream(art: Any) -> AsyncGenerator[Any, None]:
+    yield art
+
+
 def _build_completed_task(
-    notebook_id: str, task_id: str, task_info: dict, t_state: TaskState
-) -> dict:
-    return {
-        "notebook_id": notebook_id,
-        "artifact_id": task_id,
-        "title": t_state.title
-        or task_info.get("title")
-        or (
-            os.path.splitext(os.path.basename(t_state.audio_path))[0]
-            if t_state.audio_path
-            else task_id
-        ),
-        "metadata": task_info.get("metadata", {}),
-    }
+    notebook_id: str,
+    task_id: Optional[str],
+    task_info: PodcastGenTask,
+    t_state: TaskState,
+) -> PodcastGenTask:
+    tid = task_id or ""
+    return PodcastGenTask(
+        notebook_id=notebook_id,
+        task_id=tid,
+        title=t_state.title or task_info.title or tid,
+        status=TaskStatus.COMPLETED,
+        metadata=task_info.metadata,
+    )
 
 
 def _resolve_date_from_dir(podcast_dir: str, notebook_id: str) -> Optional[str]:
@@ -58,7 +73,9 @@ def _resolve_date_from_dir(podcast_dir: str, notebook_id: str) -> Optional[str]:
     return None
 
 
-def _task_state_for(task_id: str, lang: str, state: Optional[WorkflowState]):
+def _task_state_for(
+    task_id: Optional[str], lang: str, state: Optional[WorkflowState]
+) -> Optional[TaskState]:
     if not state or not task_id:
         return None
     t_state = next((t for t in state.tasks if t.task_id == task_id), None)
@@ -68,16 +85,11 @@ def _task_state_for(task_id: str, lang: str, state: Optional[WorkflowState]):
 
 
 def _should_skip_existing_audio(t_state: Optional[TaskState]) -> bool:
-    return bool(
-        t_state
-        and t_state.status in ("downloaded", "tagged", "transcribed")
-        and t_state.audio_path
-        and os.path.exists(t_state.audio_path)
-    )
+    return bool(t_state and t_state.audio_path and os.path.exists(t_state.audio_path))
 
 
 def _should_skip_tagging(t_state: Optional[TaskState]) -> bool:
-    return bool(t_state and t_state.status in ("tagged", "transcribed"))
+    return bool(t_state and t_state.is_tagged)
 
 
 def _should_skip_transcription(
@@ -85,7 +97,8 @@ def _should_skip_transcription(
 ) -> bool:
     return bool(
         t_state
-        and t_state.status == "transcribed"
+        and t_state.transcription
+        and t_state.transcription[-1].status == TaskStatus.COMPLETED
         and transcript_path
         and os.path.exists(transcript_path)
     )
@@ -114,13 +127,16 @@ def _build_generation_task(
     task_state: TaskState,
     length: str,
     format_args: dict,
-) -> dict:
-    return {
-        "notebook_id": notebook_id,
-        "task_id": task_state.task_id,
-        "title": task_state.title,
-        "eta": 10.0,
-        "metadata": {
+) -> PodcastGenTask:
+    minutes = parse_duration_minutes(length) or 20
+    eta = max(480.0, minutes * 30.0)
+    return PodcastGenTask(
+        notebook_id=notebook_id,
+        task_id=task_state.task_id,
+        title=task_state.title,
+        eta=eta,
+        generation_started_at=task_state.generation_started_at,
+        metadata={
             "generate-podcast": {
                 "language": lang_code,
                 "type": "main-article-with-author",
@@ -128,84 +144,73 @@ def _build_generation_task(
                 "format_args": format_args,
             }
         },
-    }
+    )
 
 
-def _append_generated_state(state: WorkflowState, task: dict) -> None:
-    lang_code = task.get("metadata", {}).get("generate-podcast", {}).get("language")
+def _append_generated_state(state: WorkflowState, task: PodcastGenTask) -> None:
+    lang_code = task.metadata.get("generate-podcast", {}).get("language")
     t_state = next((t for t in state.tasks if t.language == lang_code), None)
     if not t_state:
         state.tasks.append(
             TaskState(
-                task_id=task["task_id"],
-                language=lang_code,
-                status="generated",
-                title=task.get("title"),
+                task_id=task.task_id,
+                language=lang_code or "en",
+                status=TaskStatus.IN_PROGRESS,
+                title=task.title,
+                generation_started_at=task.generation_started_at,
             )
         )
         return
 
-    t_state.task_id = task["task_id"]
-    t_state.status = "generated"
-    if "title" in task:
-        t_state.title = task["title"]
+    t_state.task_id = task.task_id
+    t_state.status = TaskStatus.IN_PROGRESS
+    if task.title:
+        t_state.title = task.title
+    if task.generation_started_at:
+        t_state.generation_started_at = task.generation_started_at
 
 
-def _build_processed_file(notebook_id: str, t_state: TaskState) -> dict:
-    return {
-        "notebook_id": notebook_id,
-        "artifact_id": t_state.task_id,
-        "title": t_state.title
-        or os.path.splitext(os.path.basename(t_state.audio_path))[0],
-        "path": t_state.audio_path,
-        "filename": os.path.basename(t_state.audio_path),
-        "lrc_path": t_state.lrc_path,
-        "metadata": {"generate-podcast": {"language": t_state.language}},
-    }
-
-
-def _distribution_target_params(target: DistributionRef) -> dict:
-    if target.ref:
-        return {"ref": target.ref}
-    return {
-        "rsync": getattr(target, "rsync", None),
-        "notifiers": getattr(target, "notifiers", []),
-    }
+def _build_processed_file(notebook_id: str, t_state: TaskState) -> PodcastGenArtifact:
+    audio_path = t_state.audio_path or ""
+    return PodcastGenArtifact(
+        notebook_id=notebook_id,
+        artifact_id=t_state.task_id,
+        title=t_state.title or os.path.splitext(os.path.basename(audio_path))[0],
+        path=audio_path,
+        filename=os.path.basename(audio_path),
+        lrc_path=t_state.lrc_path,
+        metadata={"generate-podcast": {"language": t_state.language}},
+    )
 
 
 async def _run_distribution_target(
     target,
-    config,
     notebook_id: str,
-    podcast_dir: Optional[str],
-    verbose: bool,
+    podcast_dir: str,
 ):
     from ...distribution import build_distribution
 
-    target_params = _distribution_target_params(target)
     try:
         async with log_task(
             "distribute_task",
             logger,
             notebook_id=notebook_id,
-            target=target_params,
         ):
-            dist_obj = build_distribution(target, config)
+            dist_obj = build_distribution(target)
             await dist_obj.distribute(
                 notebook_id=notebook_id,
                 podcast_dir=podcast_dir,
-                verbose=verbose,
             )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.error(f"Distribution target failed: {e}", exc_info=True)
 
 
 @task("upload_source", logger)
 async def upload_and_wait_source(
     notebook_id: str,
     source_file: str,
+    importer: MaybeRef[ImporterConfig],
     title: Optional[str] = None,
-    importer: Any = "default",
 ) -> str:
     """Uploads a source file or URL and waits for processing."""
     return await notebook_mod.upload_source(
@@ -216,30 +221,27 @@ async def upload_and_wait_source(
 @task("process_podcast_task", logger)
 async def generate_download_and_tag_podcast(
     notebook_id: str,
-    task_info: dict,
+    task_info: PodcastGenTask,
     cover_image: Optional[Union[str, asyncio.Task, None]],
+    podcast_dir: str,
     state: Optional[WorkflowState] = None,
     notebook_dir: Optional[Path] = None,
-    podcast_dir: Optional[str] = None,
-    track_offset: int = 0,
     transcribe: bool = False,
     transcription_languages: Optional[list[str]] = None,
     transcribe_retry_count: int = 0,
-    transcriber_key: str = "default",
+    transcription_config: Optional[MaybeRef[PodcastTranscriptionConfig]] = None,
     tagging_config: Optional[TaggingConfig] = None,
-    verbose: bool = False,
 ):
     """Polls, downloads, and tags a specific generation task once complete."""
-    task_id = task_info.get("task_id") or task_info.get("artifact_id")
-    lang = (
-        task_info.get("metadata", {}).get("generate-podcast", {}).get("language", "en")
-    )
+    task_id = task_info.task_id
+    lang = task_info.metadata.get("generate-podcast", {}).get("language", "en")
     logger.debug(f"Processing task {task_id} for language {lang}...")
 
     def update_task_state(
-        status: str,
+        status: Optional[TaskStatus] = None,
         audio_path: Optional[str] = None,
         lrc_path: Optional[str] = None,
+        is_tagged: Optional[bool] = None,
         error: Optional[str] = None,
         title: Optional[str] = None,
     ):
@@ -251,16 +253,23 @@ async def generate_download_and_tag_podcast(
         if not t_state:
             t_state = next((t for t in state.tasks if t.language == lang), None)
         if not t_state:
-            t_state = TaskState(task_id=task_id or "", language=lang, status=status)
+            t_state = TaskState(
+                task_id=task_id or "",
+                language=lang,
+                status=status or TaskStatus.PENDING,
+            )
             state.tasks.append(t_state)
 
         if task_id:
             t_state.task_id = task_id
-        t_state.status = status
+        if status:
+            t_state.status = status
         if audio_path:
             t_state.audio_path = audio_path
         if lrc_path:
             t_state.lrc_path = lrc_path
+        if is_tagged is not None:
+            t_state.is_tagged = is_tagged
         if error:
             t_state.error = error
         if title:
@@ -271,20 +280,15 @@ async def generate_download_and_tag_podcast(
     t_state = _task_state_for(task_id, lang, state)
 
     # Check if task generation itself failed prior to polling
-    if task_info.get("status") == "failed":
-        err = task_info.get("error", "Task generation failed to start")
+    if task_info.status == TaskStatus.FAILED:
+        err = task_info.error or "Task generation failed to start"
         logger.error(f"[{lang}] Task generation failed: {err}")
-        update_task_state("failed", error=err)
+        update_task_state(TaskStatus.FAILED, error=err)
         return None
 
     # Step 1: Poll
-    completed_task = None
-    if t_state and t_state.status in (
-        "completed",
-        "downloaded",
-        "tagged",
-        "transcribed",
-    ):
+    completed_task: Optional[PodcastGenTask] = None
+    if t_state and t_state.status == TaskStatus.COMPLETED:
         logger.debug(f"Skipping polling for already completed task: {task_id}")
         completed_task = _build_completed_task(notebook_id, task_id, task_info, t_state)
     else:
@@ -299,33 +303,39 @@ async def generate_download_and_tag_podcast(
                 completed_task = completed
                 break
 
-            if not completed_task or completed_task.get("status") == "failed":
+            if not completed_task or completed_task.status == TaskStatus.FAILED:
                 err_msg = (
-                    completed_task.get("error")
+                    completed_task.error
                     if completed_task
                     else f"Task failed to complete: {task_id}"
                 )
                 logger.error(f"[{lang}] Audio task failed: {err_msg}")
-                update_task_state("failed", error=err_msg)
+                update_task_state(TaskStatus.FAILED, error=err_msg)
                 raise RuntimeError(err_msg)
 
-            update_task_state("completed", title=completed_task.get("title"))
+            update_task_state(TaskStatus.COMPLETED, title=completed_task.title)
+
+    assert completed_task is not None
 
     # Step 2: Download
-    downloaded = None
-    if _should_skip_existing_audio(t_state):
-        logger.debug(f"Skipping download, file already exists: {t_state.audio_path}")
-        downloaded = {
-            **completed_task,
-            "path": t_state.audio_path,
-            "filename": os.path.basename(t_state.audio_path),
-        }
+    downloaded: Optional[PodcastGenArtifact] = None
+    if _should_skip_existing_audio(t_state) and t_state and t_state.audio_path:
+        audio_path_val = t_state.audio_path
+        logger.debug(f"Skipping download, file already exists: {audio_path_val}")
+        downloaded = PodcastGenArtifact(
+            notebook_id=notebook_id,
+            artifact_id=completed_task.task_id,
+            title=completed_task.title or completed_task.task_id,
+            path=audio_path_val,
+            filename=os.path.basename(audio_path_val),
+            metadata=completed_task.metadata,
+        )
     else:
         async with log_task(
             "download_task",
             logger,
             notebook_id=notebook_id,
-            artifact_id=completed_task["artifact_id"],
+            artifact_id=completed_task.task_id,
             podcast_dir=podcast_dir,
         ):
 
@@ -339,12 +349,14 @@ async def generate_download_and_tag_podcast(
                 break
             if not downloaded:
                 raise RuntimeError(
-                    f"Failed to download artifact {completed_task['artifact_id']}"
+                    f"Failed to download artifact {completed_task.task_id}"
                 )
-            update_task_state("downloaded", audio_path=downloaded["path"])
+            update_task_state(audio_path=downloaded.path)
+
+    assert downloaded is not None
 
     # Step 3: Tag
-    tagged = None
+    tagged: Optional[PodcastGenArtifact] = None
     if not tagging_config or not tagging_config.enable:
         logger.debug("Tagging is disabled in workflow config, skipping.")
         tagged = downloaded
@@ -358,7 +370,7 @@ async def generate_download_and_tag_podcast(
             "tag_task",
             logger,
             notebook_id=notebook_id,
-            artifact_id=completed_task["artifact_id"],
+            artifact_id=completed_task.task_id,
             cover_path=resolved_cover_image,
         ):
 
@@ -371,78 +383,151 @@ async def generate_download_and_tag_podcast(
                 cover_path=resolved_cover_image,
                 album=state.notebook_title if state else None,
                 created_at=date_val,
-                tags_ref=tagging_config.spec if tagging_config else None,
+                tags_config=(
+                    tagging_config.spec
+                    if tagging_config
+                    and isinstance(tagging_config.spec, PodcastTagsConfig)
+                    else None
+                ),
             ):
                 tagged = tag
                 break
             if not tagged:
-                raise RuntimeError(
-                    f"Failed to tag artifact {completed_task['artifact_id']}"
-                )
-            update_task_state("tagged")
+                raise RuntimeError(f"Failed to tag artifact {completed_task.task_id}")
+            update_task_state(is_tagged=True)
+
+    assert tagged is not None
 
     # Step 4: Transcribe
     if transcribe:
         if transcription_languages is None or lang in transcription_languages:
-            transcript_path = os.path.splitext(tagged["path"])[0] + ".tr.json"
-            if _should_skip_transcription(t_state, transcript_path):
+            tagged_path = tagged.path
+            transcript_path = os.path.splitext(tagged_path)[0] + ".tr.json"
+            if _should_skip_transcription(t_state, transcript_path) and t_state:
                 logger.debug("Skipping transcription, LRC file already exists")
-                tagged = {
-                    **tagged,
-                    "lrc_path": t_state.lrc_path,
-                    "transcript_path": transcript_path,
-                }
+                tagged = tagged.model_copy(
+                    update={
+                        "lrc_path": t_state.lrc_path,
+                        "transcript_path": transcript_path,
+                    }
+                )
             else:
                 attempts = 0
                 while True:
                     success = False
                     t_state = _task_state_for(task_id, lang, state)
-                    if t_state:
-                        t_state.transcription.append(
-                            TranscriptionState(status="in_progress")
-                        )
-                        state.save(notebook_dir)
+
+                    existing_tr = (
+                        t_state.transcription[-1]
+                        if (t_state and t_state.transcription)
+                        else None
+                    )
 
                     try:
                         async with log_task(
                             "transcribe_task",
                             logger,
-                            artifact_id=completed_task["artifact_id"],
+                            artifact_id=completed_task.task_id,
                             language=lang,
                         ):
-
-                            async def tagged_gen():
-                                yield tagged
-
-                            async for transcribed in transcription.transcribe_artifacts(
-                                tagged_gen(),
-                                verbose=verbose,
-                                transcriber_key=transcriber_key,
+                            if (
+                                existing_tr
+                                and existing_tr.task_id
+                                and existing_tr.status
+                                in (TaskStatus.IN_PROGRESS, TaskStatus.PENDING)
                             ):
-                                tagged = transcribed
-                                success = True
+                                logger.info(
+                                    f"Resuming existing transcription task {existing_tr.task_id} for {lang}"
+                                )
+                                bcp47_lang = (
+                                    transcription.LANGUAGE_MAP.get(lang, lang)
+                                    or "en-US"
+                                )
+                                created_job = TranscriptionTask(
+                                    artifact_id=completed_task.task_id,
+                                    task_id=existing_tr.task_id,
+                                    gcs_uri=existing_tr.gcs_uri,
+                                    path=tagged.path,
+                                    bcp47_lang=bcp47_lang,
+                                    status=existing_tr.status,
+                                )
+                                created_job_stream = _single_artifact_stream(
+                                    created_job
+                                )
+                            else:
+                                if t_state and state and notebook_dir:
+                                    t_state.transcription.append(
+                                        TranscriptionState(
+                                            status=TaskStatus.IN_PROGRESS
+                                        )
+                                    )
+                                    state.save(notebook_dir)
+
+                                async def _create_and_save():
+                                    async for (
+                                        job
+                                    ) in transcription.create_transcription_jobs(
+                                        _single_artifact_stream(tagged),
+                                        transcription_config=transcription_config,
+                                    ):
+                                        current_t = _task_state_for(
+                                            task_id, lang, state
+                                        )
+                                        if (
+                                            current_t
+                                            and current_t.transcription
+                                            and state
+                                            and notebook_dir
+                                        ):
+                                            current_t.transcription[-1].task_id = (
+                                                job.task_id
+                                            )
+                                            current_t.transcription[-1].gcs_uri = (
+                                                job.gcs_uri
+                                            )
+                                            state.save(notebook_dir)
+                                        yield job
+
+                                created_job_stream = _create_and_save()
+
+                            async for created_tr in created_job_stream:
+                                async for (
+                                    polled_tr
+                                ) in transcription.poll_transcription_jobs(
+                                    _single_artifact_stream(created_tr)
+                                ):
+                                    async for (
+                                        downloaded_tr
+                                    ) in transcription.download_transcription_jobs(
+                                        _single_artifact_stream(polled_tr)
+                                    ):
+                                        tagged = tagged.model_copy(
+                                            update={
+                                                "lrc_path": downloaded_tr.lrc_path,
+                                                "transcript_path": downloaded_tr.transcript_path,
+                                                "metadata": downloaded_tr.metadata,
+                                            }
+                                        )
+                                        success = True
+                                        break
+                                    break
                                 break
                     except Exception as e:
                         logger.error(f"Error during transcription attempt: {e}")
 
                     t_state = _task_state_for(task_id, lang, state)
-                    if (
-                        success
-                        and tagged.get("lrc_path")
-                        and os.path.exists(tagged["lrc_path"])
-                    ):
-                        update_task_state(
-                            "transcribed", lrc_path=tagged.get("lrc_path")
-                        )
-                        if t_state and t_state.transcription:
-                            t_state.transcription[-1].status = "completed"
-                            t_state.transcription[-1].lrc_path = tagged.get("lrc_path")
+                    lrc_path_val = tagged.lrc_path
+                    if success and lrc_path_val and os.path.exists(lrc_path_val):
+                        update_task_state(lrc_path=lrc_path_val)
+                        if t_state and t_state.transcription and state and notebook_dir:
+                            t_state.transcription[-1].status = TaskStatus.COMPLETED
+                            t_state.transcription[-1].lrc_path = lrc_path_val
                             state.save(notebook_dir)
                         break
                     else:
                         error_msg = f"Transcription attempt {attempts + 1} failed or produced no LRC file."
-                        if t_state and t_state.transcription:
-                            t_state.transcription[-1].status = "failed"
+                        if t_state and t_state.transcription and state and notebook_dir:
+                            t_state.transcription[-1].status = TaskStatus.FAILED
                             t_state.transcription[-1].error = error_msg
                             state.save(notebook_dir)
                         if attempts < transcribe_retry_count:
@@ -453,11 +538,11 @@ async def generate_download_and_tag_podcast(
                             continue
                         else:
                             raise RuntimeError(
-                                f"Transcription failed after {attempts} retries."
+                                f"Transcription failed after {attempts} retries: {error_msg}"
                             )
         else:
             logger.debug(
-                f"Skipping transcription for {completed_task['artifact_id']} (lang: {lang} not in {transcription_languages})"
+                f"Skipping transcription for {completed_task.task_id} (lang: {lang} not in {transcription_languages})"
             )
 
     return tagged
@@ -465,7 +550,8 @@ async def generate_download_and_tag_podcast(
 
 @task("workflow_run", logger)
 async def run(
-    preset_name: str,
+    wf_config: DeepDiveArticleConfig,
+    preset_name: str = "default",
     title: Optional[str] = None,
     source_file: Optional[str] = None,
     notebook_id: Optional[str] = None,
@@ -474,9 +560,8 @@ async def run(
     enrich_web: Optional[bool] = None,
     generate_cover: Optional[bool] = None,
     transcribe: Optional[bool] = None,
-    podcast_dir: Optional[str] = None,
+    podcast_dir: str = "podcasts",
     resume: bool = False,
-    verbose: bool = False,
 ):
     if resume:
         if not notebook_id:
@@ -494,12 +579,6 @@ async def run(
             raise ValueError(
                 "Must provide source_file when starting a new workflow run."
             )
-
-    config = load_config()
-
-    # 1. Resolve podcast directory
-    if not podcast_dir:
-        podcast_dir = config.podcast_dir or DEFAULT_PODCAST_DIR
 
     state = None
     notebook_dir_path = None
@@ -532,13 +611,6 @@ async def run(
             f"Resuming workflow for notebook: {notebook_id} using preset: {preset_name}"
         )
 
-    wf_config = config.workflow.root.get(preset_name)
-    if not wf_config:
-        raise ValueError(f"Workflow preset '{preset_name}' not found.")
-
-    if wf_config.type != "deep_dive_article":
-        raise ValueError(f"Unsupported workflow type: {wf_config.type}")
-
     enrich_config = wf_config.enrich_web
 
     # Resolve defaults from the specific preset
@@ -549,53 +621,14 @@ async def run(
     if transcribe is None:
         transcribe = wf_config.transcribe.enable
 
-    # Resolve podcast transcriber settings
-    transcriber_ref = wf_config.transcribe.podcast_transcriber
-    transcriber_name = transcriber_ref.ref or "default"
+    # Resolve podcast transcriber and generator settings
+    transcriber_config = wf_config.transcribe.podcast_transcriber
+    transcription_langs = transcriber_config.languages
 
-    from podcaster.config import PodcastTranscriptionConfig
-
-    if transcriber_name in config.podcast_transcribers:
-        base_transcriber_config = config.podcast_transcribers[transcriber_name]
-    else:
-        base_transcriber_config = config.podcast_transcribers.get(
-            "default", PodcastTranscriptionConfig()
-        )
-
-    transcription_langs = (
-        transcriber_ref.languages
-        if transcriber_ref.languages is not None
-        else base_transcriber_config.languages
-    )
-
-    # Resolve podcast generator settings
-    generator_ref = wf_config.podcast_generator
-    generator_name = generator_ref.ref or "default"
-
-    from podcaster.config import PodcastGenerationConfig
-
-    if generator_name in config.podcast_generators:
-        base_gen_config = config.podcast_generators[generator_name]
-    else:
-        base_gen_config = config.podcast_generators.get(
-            "default", PodcastGenerationConfig()
-        )
-
-    gen_languages = (
-        generator_ref.languages
-        if generator_ref.languages is not None
-        else base_gen_config.languages
-    )
-    gen_length = (
-        generator_ref.length
-        if generator_ref.length is not None
-        else base_gen_config.length
-    )
-    ignore_errors = (
-        generator_ref.ignore_errors
-        if generator_ref.ignore_errors is not None
-        else base_gen_config.ignore_errors
-    )
+    generator_config = wf_config.podcast_generator
+    gen_languages = generator_config.languages
+    gen_length = generator_config.length
+    ignore_errors = generator_config.ignore_errors
 
     if not length:
         length = gen_length
@@ -604,7 +637,7 @@ async def run(
     if not languages:
         languages = ["en"]
 
-    if length != "auto":
+    if length and length != "auto":
         length = resolve_duration(length)
 
     logger.info(f"=== Starting Deep Dive Article Workflow (Preset: {preset_name}) ===")
@@ -617,14 +650,14 @@ async def run(
         logger.info(f"Resuming existing notebook: {notebook_id}")
     else:
         notebook_info = await notebook_mod.init_notebook(
-            title=title,
             podcast_dir=podcast_dir,
-            from_source=source_file,
             importer=wf_config.importer,
+            title=title,
+            from_source=source_file,
         )
-        notebook_id = notebook_info["notebook_id"]
-        derived_title = notebook_info["derived_title"]
-        source_id = notebook_info["source_id"]
+        notebook_id = str(notebook_info["notebook_id"])
+        derived_title = str(notebook_info.get("derived_title") or "")
+        source_id = str(notebook_info.get("source_id") or "")
         notebook_dir_path = Path(podcast_dir) / notebook_info["local_dir"]
 
         # Create new state
@@ -644,6 +677,11 @@ async def run(
         )
         state.save(notebook_dir_path)
 
+    assert notebook_id is not None
+    assert notebook_dir_path is not None
+    assert state is not None
+    assert length is not None
+
     # 2. Handle source
     if resume:
         logger.info(f"Using existing source: {source_id}")
@@ -652,23 +690,26 @@ async def run(
     cover_task = None
     cover_needed = generate_cover and (
         not state.cover
-        or state.cover[-1].status != "completed"
+        or state.cover[-1].status != TaskStatus.COMPLETED
         or not state.cover_image_path
         or not os.path.exists(state.cover_image_path)
     )
     if cover_needed:
 
         async def on_cover_start(task_id: str, image_gen_prompt: str):
-            if not state.cover or state.cover[-1].status in ("completed", "failed"):
+            if not state.cover or state.cover[-1].status in (
+                TaskStatus.COMPLETED,
+                TaskStatus.FAILED,
+            ):
                 state.cover.append(
                     CoverState(
-                        status="in_progress",
+                        status=TaskStatus.IN_PROGRESS,
                         task_id=task_id,
                         image_gen_prompt=image_gen_prompt,
                     )
                 )
             else:
-                state.cover[-1].status = "in_progress"
+                state.cover[-1].status = TaskStatus.IN_PROGRESS
                 state.cover[-1].task_id = task_id
                 state.cover[-1].image_gen_prompt = image_gen_prompt
             state.save(notebook_dir_path)
@@ -695,7 +736,7 @@ async def run(
                             else None
                         )
 
-                        cover_path = await cover.generate_cover(
+                        cover_path = await cover.generate_cover_for_notebook(
                             notebook_id,
                             podcast_dir=podcast_dir,
                             task_id=task_id_to_use,
@@ -704,7 +745,7 @@ async def run(
                         )
                         state.cover_image_path = cover_path
                         if state.cover:
-                            state.cover[-1].status = "completed"
+                            state.cover[-1].status = TaskStatus.COMPLETED
                         state.save(notebook_dir_path)
                         return cover_path
                 except Exception as e:
@@ -714,13 +755,13 @@ async def run(
                             f"Cover generation failed: {e}. Retrying cover generation task (attempt {attempts}/{retry_count})...."
                         )
                         if state.cover:
-                            state.cover[-1].status = "failed"
+                            state.cover[-1].status = TaskStatus.FAILED
                             state.cover[-1].error = str(e)
                         state.save(notebook_dir_path)
                         continue
                     else:
                         if state.cover:
-                            state.cover[-1].status = "failed"
+                            state.cover[-1].status = TaskStatus.FAILED
                             state.cover[-1].error = str(e)
                         state.save(notebook_dir_path)
                         raise
@@ -732,19 +773,19 @@ async def run(
     # We need enrichment if explicitly requested OR if auto-length is needed
     # AND we have not already marked enrichment as completed
     enrichment_needed = (enrich_web or length == "auto") and (
-        not state.enrichment or state.enrichment[-1].status != "completed"
+        not state.enrichment or state.enrichment[-1].status != TaskStatus.COMPLETED
     )
 
     async def on_enrich_start(
         task_id: str, topic: str, summary: str, suggested_duration: str
     ):
         if not state.enrichment or state.enrichment[-1].status in (
-            "completed",
-            "failed",
+            TaskStatus.COMPLETED,
+            TaskStatus.FAILED,
         ):
             state.enrichment.append(
                 EnrichmentState(
-                    status="in_progress",
+                    status=TaskStatus.IN_PROGRESS,
                     task_id=task_id,
                     topic=topic,
                     summary=summary,
@@ -752,7 +793,7 @@ async def run(
                 )
             )
         else:
-            state.enrichment[-1].status = "in_progress"
+            state.enrichment[-1].status = TaskStatus.IN_PROGRESS
             state.enrichment[-1].task_id = task_id
             state.enrichment[-1].topic = topic
             state.enrichment[-1].summary = summary
@@ -761,11 +802,7 @@ async def run(
 
     research_res = None
     if enrichment_needed:
-        max_imports = enrich_config.spec.max_imports if enrich_web else 0
-        if max_imports == -1:
-            max_imports = None
         mode = enrich_config.spec.mode
-        ignore_errors = enrich_config.spec.ignore_errors
 
         task_id_val = state.enrichment[-1].task_id if state.enrichment else None
         topic_val = state.enrichment[-1].topic if state.enrichment else None
@@ -780,24 +817,22 @@ async def run(
             notebook_id=notebook_id,
             source_id=source_id,
             mode=mode,
-            max_imports=max_imports,
         ):
+            assert source_id is not None
             research_res = await research.research_from_source(
                 notebook_id,
                 source_id,
                 mode=mode,
-                max_imports=max_imports,
-                verbose=verbose,
                 task_id=task_id_val,
                 topic=topic_val,
                 summary=summary_val,
                 suggested_duration=suggested_len_val,
                 on_start_callback=on_enrich_start,
-                ignore_errors=ignore_errors,
-                fallback_mechanism=enrich_config.fallback_mechanism,
+                fallback_importer=enrich_config.spec.fallback_importer,
+                max_import_failures=enrich_config.spec.max_import_failures,
             )
             if state.enrichment:
-                state.enrichment[-1].status = "completed"
+                state.enrichment[-1].status = TaskStatus.COMPLETED
             state.save(notebook_dir_path)
 
     if length == "auto":
@@ -805,7 +840,7 @@ async def run(
         if state.enrichment and state.enrichment[-1].suggested_length:
             length = state.enrichment[-1].suggested_length
         elif research_res:
-            length = research_res.get("suggested_duration", "20 minutes")
+            length = research_res.suggested_duration or "20 minutes"
         else:
             length = "20 minutes"  # Fallback
 
@@ -824,19 +859,34 @@ async def run(
         t_state = next((t for t in state.tasks if t.language == lang_code), None)
         if t_state:
             if (
-                t_state.status in ("tagged", "transcribed")
-                and t_state.audio_path
+                t_state.audio_path
                 and os.path.exists(t_state.audio_path)
+                and (
+                    not wf_config.tagging
+                    or not wf_config.tagging.enable
+                    or t_state.is_tagged
+                )
+                and (
+                    not transcribe
+                    or (
+                        t_state.transcription
+                        and t_state.transcription[-1].status == TaskStatus.COMPLETED
+                    )
+                )
             ):
                 # Completely done
                 continue
-            if t_state.task_id:
+            if t_state.task_id and t_state.status != TaskStatus.FAILED:
                 logger.info(
                     f"Reusing existing task {t_state.task_id} for language {lang_code}"
                 )
                 tasks.append(
                     _build_generation_task(
-                        notebook_id, lang_code, t_state, length, format_args
+                        notebook_id,
+                        lang_code,
+                        t_state,
+                        length or "20 minutes",
+                        format_args,
                     )
                 )
                 continue
@@ -851,14 +901,14 @@ async def run(
             languages=languages_to_generate,
             length=length,
         ):
-            async for task in audio_gen_core.generate_tasks(
+            async for task in audio_gen_core.create_podcast_audio_jobs(
                 notebook_id,
                 "main-article-with-author",
                 languages_to_generate,
-                length,
+                length or "20 minutes",
                 json.dumps(format_args),
                 dry_run=False,
-                generator_key=generator_name,
+                generator_config=generator_config,
             ):
                 tasks.append(task)
                 _append_generated_state(state, task)
@@ -875,15 +925,14 @@ async def run(
                 notebook_id,
                 task,
                 cover_arg,
+                podcast_dir,
                 state=state,
                 notebook_dir=notebook_dir_path,
-                podcast_dir=podcast_dir,
                 transcribe=transcribe,
                 transcription_languages=transcription_langs,
                 transcribe_retry_count=transcribe_retry_count,
-                transcriber_key=transcriber_name,
+                transcription_config=transcriber_config,
                 tagging_config=wf_config.tagging,
-                verbose=verbose,
             )
             for task in tasks
         ]
@@ -902,22 +951,21 @@ async def run(
 
     # Add already completed tasks from state to processed_files for reporting
     for t_state in state.tasks:
-        if (
-            t_state.status in ("tagged", "transcribed")
-            and t_state.audio_path
-            and os.path.exists(t_state.audio_path)
-        ):
-            if not any(
-                pf.get("path") == t_state.audio_path for pf in processed_files if pf
-            ):
+        if t_state.audio_path and os.path.exists(t_state.audio_path):
+            if not any(pf.path == t_state.audio_path for pf in processed_files if pf):
                 processed_files.append(_build_processed_file(notebook_id, t_state))
 
-    logger.info(f"Processed podcasts: {[pf['path'] for pf in processed_files if pf]}")
+    logger.info(f"Processed podcasts: {[pf.path for pf in processed_files if pf]}")
 
     # Update status to completed if all tasks are complete
-    all_completed = all(t.status in ("tagged", "transcribed") for t in state.tasks)
+    all_completed = all(
+        t.status == TaskStatus.COMPLETED
+        and t.audio_path
+        and os.path.exists(t.audio_path)
+        for t in state.tasks
+    )
     if all_completed:
-        state.status = "completed"
+        state.status = TaskStatus.COMPLETED
         state.save(notebook_dir_path)
 
     # 5. Distribute results
@@ -925,7 +973,7 @@ async def run(
         logger.info(f"Distributing to {len(distribute_targets)} targets...")
 
         dist_tasks = [
-            _run_distribution_target(target, config, notebook_id, podcast_dir, verbose)
+            _run_distribution_target(target, notebook_id, podcast_dir)
             for target in distribute_targets
         ]
         await asyncio.gather(*dist_tasks)
@@ -939,5 +987,5 @@ async def run(
     logger.info("=== Workflow Complete ===")
     return {
         "notebook_id": notebook_id,
-        "files": [pf["path"] for pf in processed_files if pf],
+        "files": [pf.path for pf in processed_files if pf],
     }

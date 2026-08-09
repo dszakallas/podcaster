@@ -4,7 +4,7 @@ import logging
 import mimetypes
 import os
 import time
-from typing import AsyncGenerator, Optional, Union
+from typing import AsyncGenerator, AsyncIterable, Optional
 
 from mutagen.flac import Picture
 from mutagen.id3 import (
@@ -24,8 +24,8 @@ from mutagen.mp3 import MP3
 from mutagen.mp4 import MP4, MP4Cover
 from mutagen.oggvorbis import OggVorbis
 
-from .config import PodcastTagsConfig, Ref
-from .utils import load_config
+from .config import PodcastTagsConfig
+from .models import PodcastGenArtifact
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +49,10 @@ def set_mp3_tags(
         audio = MP3(path)
         audio.add_tags()
 
+    if audio.tags is None:
+        audio.add_tags()
     tags = audio.tags
+    assert tags is not None
 
     if title:
         tags.add(TIT2(encoding=3, text=title))
@@ -249,58 +252,35 @@ def tag_file(
 
 
 async def tag_artifacts(
-    artifacts: AsyncGenerator[dict, None],
+    artifacts: AsyncIterable[PodcastGenArtifact],
     cover_path: Optional[str] = None,
     track_offset: int = 0,
     album: Optional[str] = None,
     created_at: Optional[str] = None,
-    tags_ref: Optional[Union[str, Ref[PodcastTagsConfig]]] = None,
-) -> AsyncGenerator[dict, None]:
-    config = load_config()
-    if isinstance(tags_ref, str):
-        ref_obj = Ref[PodcastTagsConfig](ref=tags_ref)
-    elif isinstance(tags_ref, Ref):
-        ref_obj = tags_ref
-    else:
-        ref_obj = Ref[PodcastTagsConfig](ref="default")
+    tags_config: Optional[PodcastTagsConfig] = None,
+) -> AsyncGenerator[PodcastGenArtifact, None]:
+    base_cfg = tags_config or PodcastTagsConfig()
 
-    preset_name = ref_obj.ref or "default"
-    base_cfg = (
-        config.podcast_tags.get(preset_name)
-        or config.podcast_tags.get("default")
-        or PodcastTagsConfig()
-    )
-
-    default_album_artist = (
-        ref_obj.album_artist
-        if ref_obj.album_artist is not None
-        else base_cfg.album_artist
-    )
-    default_artists = (
-        ref_obj.artists if ref_obj.artists is not None else base_cfg.artists
-    )
+    default_album_artist = base_cfg.album_artist
+    default_artists = base_cfg.artists
 
     auto_track_count = 0
 
-    async for art in artifacts:
-        notebook_id = art["notebook_id"]
-        artifact_id = art["artifact_id"]
-        title = art.get("title", artifact_id)
-        out_path = art["path"]
-        metadata = art.get("metadata", {})
+    async for art_item in artifacts:
+
+        notebook_id = art_item.notebook_id
+        title = art_item.title
+        out_path = art_item.path
+        metadata = art_item.metadata.copy()
         gen_podcast_meta = metadata.get("generate-podcast", {})
         language = gen_podcast_meta.get("language")
         source_url = f"https://notebooklm.google.com/notebook/{notebook_id}"
 
-        album_val = album or art.get("album") or "NotebookLM Podcast"
-        created_at_val = created_at or art.get("created_at")
+        album_val = album or "NotebookLM Podcast"
+        created_at_val = created_at
 
-        explicit_track = art.get("track")
-        if explicit_track is not None:
-            track_number = explicit_track
-        else:
-            auto_track_count += 1
-            track_number = track_offset + auto_track_count
+        auto_track_count += 1
+        track_number = track_offset + auto_track_count
 
         try:
             logger.debug(f"Tagging {out_path} (Track: {track_number})...")
@@ -326,7 +306,8 @@ async def tag_artifacts(
                 "cover": cover_path,
             }
 
-            yield {**art, "metadata": metadata, "track": track_number}
-        except Exception as error:
-            logger.debug(f"Tagging failed for {artifact_id}: {error}")
-            yield art
+            yield art_item.model_copy(update={"metadata": metadata})
+
+        except Exception as e:
+            logger.error(f"Failed to tag {out_path}: {e}")
+            yield art_item
