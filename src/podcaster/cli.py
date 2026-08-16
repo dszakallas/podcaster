@@ -176,7 +176,7 @@ async def podcast_create(
     return audio_gen_core.create_podcast_audio_jobs(
         notebook_id,
         type,
-        list(language) if language else [],
+        [lang.lower() for lang in language] if language else [],
         length,
         format_args_json,
         dry_run,
@@ -652,7 +652,7 @@ async def run_workflow(
         source_file=source_file,
         notebook_id=None,
         length=length,
-        languages=list(language) if language else None,
+        languages=[lang.lower() for lang in language] if language else None,
         enrich_web=enrich_web,
         generate_cover=generate_cover,
         transcribe=transcribe,

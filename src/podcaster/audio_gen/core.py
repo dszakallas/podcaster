@@ -79,6 +79,8 @@ async def create_podcast_audio_jobs(
 
     if not languages:
         languages = gen_defaults.languages
+    if languages:
+        languages = [lang.lower() for lang in languages]
 
     if not length_str:
         length_str = gen_defaults.length
