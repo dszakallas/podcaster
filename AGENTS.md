@@ -15,6 +15,9 @@ This repository uses Nix `devenv` for managing its development environment and d
 
 - **Strict `uv` Usage**: This project strictly uses `uv` for all Python package management and script execution.
 - **Forbidden Commands**: Do NOT use standalone `pip` or `python` commands. Always use `uv pip`, `uv run`, `uv sync`, etc.
+- **Configuration Loading Scope**: Never call `load_config()` outside `cli.py`. Configuration objects
+  (such as `gcp_config`, `wf_config`, etc.) MUST be loaded in `cli.py` and passed down to functions
+  and workflow modules as explicit arguments.
 
 ## Workflows and Distribution
 

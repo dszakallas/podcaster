@@ -10,6 +10,7 @@ from podcaster import notebook as notebook_mod
 from podcaster.audio_gen import core as audio_gen_core
 from podcaster.config import (
     DeepDiveArticleConfig,
+    GCPConfig,
     ImporterConfig,
     MaybeRef,
     PodcastTagsConfig,
@@ -231,6 +232,7 @@ async def generate_download_and_tag_podcast(
     transcribe_retry_count: int = 0,
     transcription_config: Optional[MaybeRef[PodcastTranscriptionConfig]] = None,
     tagging_config: Optional[TaggingConfig] = None,
+    gcp_config: Optional[GCPConfig] = None,
 ):
     """Polls, downloads, and tags a specific generation task once complete."""
     task_id = task_info.task_id
@@ -469,6 +471,7 @@ async def generate_download_and_tag_podcast(
                                     ) in transcription.create_transcription_jobs(
                                         _single_artifact_stream(tagged),
                                         transcription_config=transcription_config,
+                                        gcp_config=gcp_config,
                                     ):
                                         current_t = _task_state_for(
                                             task_id, lang, state
@@ -562,6 +565,7 @@ async def run(
     transcribe: Optional[bool] = None,
     podcast_dir: str = "podcasts",
     resume: bool = False,
+    gcp_config: Optional[GCPConfig] = None,
 ):
     if resume:
         if not notebook_id:
@@ -935,6 +939,7 @@ async def run(
                 transcribe_retry_count=transcribe_retry_count,
                 transcription_config=transcriber_config,
                 tagging_config=wf_config.tagging,
+                gcp_config=gcp_config,
             )
             for task in tasks
         ]

@@ -658,6 +658,7 @@ async def run_workflow(
         transcribe=transcribe,
         podcast_dir=podcast_dir,
         resume=False,
+        gcp_config=config.gcp,
     )
 
 
@@ -692,6 +693,7 @@ async def resume_workflow(notebook_id, podcast_dir):
         notebook_id=notebook_id,
         podcast_dir=str(notebook_dir_path.parent),
         resume=True,
+        gcp_config=config.gcp,
     )
 
 
