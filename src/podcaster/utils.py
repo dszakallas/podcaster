@@ -211,7 +211,13 @@ def get_storage_path() -> str:
     storage_path = os.environ.get("NOTEBOOKLM_STORAGE_STATE")
     if not storage_path:
         home = os.environ.get("NOTEBOOKLM_HOME", "~/.notebooklm")
-        storage_path = os.path.expanduser(os.path.join(home, "storage_state.json"))
+        profile_path = os.path.expanduser(
+            os.path.join(home, "profiles", "default", "storage_state.json")
+        )
+        if os.path.exists(profile_path):
+            storage_path = profile_path
+        else:
+            storage_path = os.path.expanduser(os.path.join(home, "storage_state.json"))
     return storage_path
 
 
@@ -315,6 +321,75 @@ def resolve_duration(length: str) -> str:
     )
 
 
+RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+RETRYABLE_GRPC_STATUSES = {
+    "UNAVAILABLE",
+    "DEADLINE_EXCEEDED",
+    "RESOURCE_EXHAUSTED",
+    "INTERNAL",
+}
+RETRYABLE_CLASS_NAMES = {
+    "ServiceUnavailable",
+    "DeadlineExceeded",
+    "ResourceExhausted",
+    "TooManyRequests",
+    "InternalServerError",
+    "BadGateway",
+    "GatewayTimeout",
+    "ConnectTimeout",
+    "ReadTimeout",
+    "WriteTimeout",
+    "PoolTimeout",
+    "ConnectError",
+    "NetworkError",
+}
+
+
+def is_transient_network_exception(e: Exception) -> bool:
+    """Explicit whitelist for transient HTTP/gRPC/TCP network exceptions that are safe to retry.
+    Closed-by-default: non-network errors (400 Bad Request, 401, 403, 404, client bugs) return False.
+    """
+    import httpx
+    from notebooklm.exceptions import NetworkError
+
+    if isinstance(e, (ConnectionError, TimeoutError, OSError, NetworkError)):
+        return True
+
+    if isinstance(
+        e,
+        (
+            httpx.TimeoutException,
+            httpx.NetworkError,
+            httpx.ConnectError,
+            httpx.ProtocolError,
+        ),
+    ):
+        return True
+
+    if isinstance(e, httpx.HTTPStatusError):
+        return e.response.status_code in RETRYABLE_STATUS_CODES
+
+    class_name = e.__class__.__name__
+    if class_name in RETRYABLE_CLASS_NAMES:
+        return True
+
+    code = getattr(e, "code", None)
+    if callable(code):
+        try:
+            code = code()
+        except Exception:
+            code = None
+
+    if hasattr(code, "name"):
+        if str(getattr(code, "name", "")) in RETRYABLE_GRPC_STATUSES:
+            return True
+
+    if isinstance(code, int):
+        return code in RETRYABLE_STATUS_CODES
+
+    return False
+
+
 async def retry_rpc(
     coro_or_func,
     *args,
@@ -324,11 +399,8 @@ async def retry_rpc(
     logger: Optional[logging.Logger] = None,
     **kwargs,
 ):
-    """Retries a coroutine or async function call with exponential backoff on transient errors."""
+    """Retries a coroutine or async function call with exponential backoff ONLY on transient network errors."""
     import asyncio
-
-    import httpx
-    from notebooklm.exceptions import NetworkError, RPCError
 
     current_delay = delay
     for attempt in range(1, retries + 1):
@@ -343,28 +415,8 @@ async def retry_rpc(
                     "retry_rpc expects an async callable/function, not a coroutine object"
                 )
         except Exception as e:
-            class_name = e.__class__.__name__
-            is_transient = (
-                isinstance(e, (NetworkError, RPCError, httpx.HTTPError))
-                or "APIError" in class_name
-                or "ServerError" in class_name
-            )
-            if not is_transient:
+            if not is_transient_network_exception(e):
                 raise e
-
-            if "NotFound" in class_name:
-                raise e
-            if isinstance(e, httpx.HTTPStatusError) and e.response.status_code < 500:
-                raise e
-            if "APIError" in class_name or "ServerError" in class_name:
-                code = getattr(e, "code", None)
-                if (
-                    code is not None
-                    and isinstance(code, int)
-                    and code < 500
-                    and code != 429
-                ):
-                    raise e
 
             if attempt == retries:
                 raise e

@@ -4,15 +4,17 @@ import logging
 import os
 import re
 import tempfile
+import time
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, AsyncGenerator, AsyncIterable, Callable, List, Optional
 
-from .config import ImporterConfig, MaybeRef, ScraperConfig
+from .config import ImporterConfig, ScraperConfig
 from .models import ResearchResult, ResearchTask, TaskStatus
 from .utils import (
     RetryingNotebookLMClient,
     get_notebooklm_client,
+    is_transient_network_exception,
     parse_duration_minutes,
     sanitize,
 )
@@ -242,19 +244,15 @@ def build_importer(importer_cfg: ImporterConfig) -> Importer:
 
 
 async def execute_importer(
-    importer: MaybeRef[ImporterConfig],
+    importer: ImporterConfig,
     notebook_id: str = "",
     source: str = "",
     title: Optional[str] = None,
     client: Optional[RetryingNotebookLMClient] = None,
 ) -> dict:
     """Executes an importer on a source string using the Importer interface."""
-    if not isinstance(importer, ImporterConfig):
-        raise ValueError(
-            f"A resolved ImporterConfig must be provided to execute_importer, got: {type(importer)}"
-        )
-    importer_obj = build_importer(importer)
-    return await importer_obj.execute(notebook_id, source, title=title, client=client)
+    imp_instance = build_importer(importer)
+    return await imp_instance.execute(notebook_id, source, title=title, client=client)
 
 
 async def scrape_source(
@@ -522,7 +520,7 @@ async def _import_scraper(
 async def import_source(
     notebook_id: str,
     source: str,
-    importer: MaybeRef[ImporterConfig],
+    importer: ImporterConfig,
     title: Optional[str] = None,
     client: Optional[RetryingNotebookLMClient] = None,
 ) -> dict:
@@ -543,7 +541,7 @@ async def import_source(
 async def import_web_source(
     notebook_id: str,
     url: str,
-    importer: MaybeRef[ImporterConfig],
+    importer: ImporterConfig,
     title: Optional[str] = None,
 ) -> dict:
     """Delegates to import_source for generalized importing with fallback."""
@@ -625,7 +623,7 @@ async def create_research_job(
 
 async def poll_research_jobs(
     tasks: AsyncIterable[ResearchTask],
-    fallback_importer: Optional[MaybeRef[ImporterConfig]] = None,
+    fallback_importer: Optional[ImporterConfig] = None,
     max_import_failures: Optional[int] = None,
 ) -> AsyncGenerator[ResearchResult, None]:
     async with get_notebooklm_client() as raw_client:
@@ -635,33 +633,49 @@ async def poll_research_jobs(
             task_id = t.task_id
 
             # 5. Poll for completion
+            started_at = time.time()
             while True:
-                res: Any = await client.research.poll(notebook_id)
-                status = (
-                    res.get("status")
-                    if isinstance(res, dict)
-                    else getattr(res, "status", None)
-                )
-                logger.debug(f"Research status: {status}")
-
-                sources_list_raw = (
-                    res.get("sources", [])
-                    if isinstance(res, dict)
-                    else getattr(res, "sources", [])
-                )
-                if status == TaskStatus.COMPLETED or (
-                    status == TaskStatus.IN_PROGRESS and len(sources_list_raw) > 0
-                ):
-                    found_sources = sources_list_raw
-                    break
-                elif status == TaskStatus.FAILED:
-                    raise RuntimeError(f"Research job failed: {res}")
-                elif status == "no_research":
-                    logger.warning(
-                        "No active research job found in polling list. Exiting poll loop."
+                try:
+                    res: Any = await client.research.poll(notebook_id)
+                    status = (
+                        res.get("status")
+                        if isinstance(res, dict)
+                        else getattr(res, "status", None)
                     )
-                    found_sources = []
-                    break
+                    logger.debug(f"Research status: {status}")
+
+                    sources_list_raw = (
+                        res.get("sources", [])
+                        if isinstance(res, dict)
+                        else getattr(res, "sources", [])
+                    )
+                    if status == TaskStatus.COMPLETED or (
+                        status == TaskStatus.IN_PROGRESS and len(sources_list_raw) > 0
+                    ):
+                        found_sources = sources_list_raw
+                        break
+                    elif status == TaskStatus.FAILED:
+                        raise RuntimeError(f"Research job failed: {res}")
+                    elif status == "no_research":
+                        logger.warning(
+                            "No active research job found in polling list. Exiting poll loop."
+                        )
+                        found_sources = []
+                        break
+                except Exception as e:
+                    if not is_transient_network_exception(e):
+                        logger.error(
+                            f"Non-retryable error polling research job for notebook {notebook_id}: {e}"
+                        )
+                        raise e
+                    logger.warning(
+                        f"Transient network error polling research for notebook {notebook_id}: {e}"
+                    )
+
+                if time.time() - started_at > 600.0:
+                    raise TimeoutError(
+                        f"Research polling timed out after 600s for notebook {notebook_id}"
+                    )
 
                 await asyncio.sleep(5)
 
@@ -778,7 +792,7 @@ async def research_from_source(
     summary: Optional[str] = None,
     suggested_duration: Optional[str] = None,
     on_start_callback: Optional[Callable[[str, str, str, str], Any]] = None,
-    fallback_importer: Optional[MaybeRef[ImporterConfig]] = None,
+    fallback_importer: Optional[ImporterConfig] = None,
     max_import_failures: Optional[int] = None,
 ) -> ResearchResult:
 

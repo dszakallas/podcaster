@@ -7,16 +7,19 @@ import tempfile
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from typing import AsyncGenerator, AsyncIterable, Optional
+from typing import AsyncGenerator, AsyncIterable
 
 from google.cloud import storage
 from google.cloud.speech_v2 import SpeechClient
 from google.cloud.speech_v2.types import cloud_speech
 
-from .config import GCPConfig, MaybeRef, PodcastTranscriptionConfig
+from .config import GCPConfig, PodcastTranscriptionConfig
 from .models import PodcastGenArtifact, TaskStatus, TranscriptionTask
+from .utils import is_transient_network_exception
 
 logger = logging.getLogger(__name__)
+
+MAX_POLL_TIMEOUT_SECONDS = 1800.0
 
 # Simple mapping for common languages to BCP-47
 LANGUAGE_MAP = {
@@ -140,17 +143,10 @@ async def delete_from_gcs(gcs_uri: str):
 
 async def create_transcription_jobs(
     artifacts: AsyncIterable[PodcastGenArtifact],
-    transcription_config: Optional[MaybeRef[PodcastTranscriptionConfig]] = None,
-    gcp_config: Optional[GCPConfig] = None,
+    gcp_config: GCPConfig,
+    transcription_config: PodcastTranscriptionConfig,
 ) -> AsyncGenerator[TranscriptionTask, None]:
-    gcp_config = gcp_config or GCPConfig()
-    trans_cfg = (
-        transcription_config
-        if isinstance(transcription_config, PodcastTranscriptionConfig)
-        else PodcastTranscriptionConfig()
-    )
-
-    speed_factor = trans_cfg.speed_factor
+    speed_factor = transcription_config.speed_factor
     project_id = gcp_config.project_id
     location = gcp_config.location
     bucket_name = gcp_config.gcs_bucket
@@ -265,12 +261,11 @@ async def create_transcription_jobs(
 
 async def poll_transcription_jobs(
     tasks: AsyncIterable[TranscriptionTask],
-    gcp_config: Optional[GCPConfig] = None,
+    gcp_config: GCPConfig,
 ) -> AsyncGenerator[TranscriptionTask, None]:
     from google.api_core import operation as api_operation
     from google.longrunning import operations_pb2
 
-    gcp_config = gcp_config or GCPConfig()
     location = gcp_config.location
 
     client = SpeechClient(
@@ -280,6 +275,7 @@ async def poll_transcription_jobs(
     async for t in tasks:
         task_id = t.task_id
         logger.info(f"Polling transcription operation: {task_id}")
+        started_at = time.time()
         while True:
             try:
                 gapic_op = client.get_operation(
@@ -301,19 +297,42 @@ async def poll_transcription_jobs(
                         )
                     break
             except Exception as e:
-                logger.error(f"Error polling transcription: {e}")
+                if not is_transient_network_exception(e):
+                    logger.error(
+                        f"Non-retryable error polling transcription task {task_id}: {e}"
+                    )
+                    yield t.model_copy(
+                        update={"status": TaskStatus.FAILED, "error": str(e)}
+                    )
+                    break
+
+                logger.warning(
+                    f"Transient network error polling transcription task {task_id}: {e}"
+                )
+
+            elapsed = time.time() - started_at
+            if elapsed > MAX_POLL_TIMEOUT_SECONDS:
+                logger.error(
+                    f"Polling transcription task {task_id} timed out after {elapsed:.1f}s"
+                )
+                yield t.model_copy(
+                    update={
+                        "status": TaskStatus.FAILED,
+                        "error": f"Transcription task {task_id} timed out after {elapsed:.1f}s",
+                    }
+                )
+                break
 
             await asyncio.sleep(10)
 
 
 async def download_transcription_jobs(
     tasks: AsyncIterable[TranscriptionTask],
-    gcp_config: Optional[GCPConfig] = None,
+    gcp_config: GCPConfig,
 ) -> AsyncGenerator[TranscriptionTask, None]:
     from google.api_core import operation as api_operation
     from google.longrunning import operations_pb2
 
-    gcp_config = gcp_config or GCPConfig()
     location = gcp_config.location
 
     client = SpeechClient(
@@ -406,15 +425,15 @@ async def download_transcription_jobs(
 
 async def transcribe_artifacts(
     artifacts: AsyncIterable[PodcastGenArtifact],
-    transcription_config: Optional[MaybeRef[PodcastTranscriptionConfig]] = None,
-    gcp_config: Optional[GCPConfig] = None,
+    gcp_config: GCPConfig,
+    transcription_config: PodcastTranscriptionConfig,
 ) -> AsyncGenerator[TranscriptionTask, None]:
     # 1. Create jobs
     tasks = []
     async for task in create_transcription_jobs(
         artifacts,
-        transcription_config=transcription_config,
         gcp_config=gcp_config,
+        transcription_config=transcription_config,
     ):
         tasks.append(task)
 

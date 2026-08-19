@@ -5,17 +5,18 @@ import math
 import os
 import time
 from pathlib import Path
-from typing import AsyncGenerator, AsyncIterable, Optional, Union
+from typing import Any, AsyncGenerator, AsyncIterable, Optional, Union
 
 from notebooklm.exceptions import NotebookNotFoundError
 from notebooklm.rpc import AudioLength
 
-from ..config import MaybeRef, PodcastGenerationConfig
+from ..config import PodcastGenerationConfig
 from ..models import PodcastGenArtifact, PodcastGenTask, TaskStatus
 from ..utils import (
     RetryingNotebookLMClient,
     get_notebooklm_client,
     get_or_create_notebook_dir,
+    is_transient_network_exception,
     parse_duration_minutes,
     resolve_duration,
     sanitize,
@@ -71,24 +72,22 @@ async def create_podcast_audio_jobs(
     type_name: str,
     languages: list[str],
     length_str: Optional[str],
-    format_args_json: str,
+    format_args: dict[str, Any],
+    generator_config: PodcastGenerationConfig,
     dry_run: bool = False,
-    generator_config: Optional[MaybeRef[PodcastGenerationConfig]] = None,
 ) -> AsyncGenerator[PodcastGenTask, None]:
-    gen_defaults = generator_config or PodcastGenerationConfig()
-
     if not languages:
-        languages = gen_defaults.languages
+        languages = generator_config.languages
     if languages:
         languages = [lang.lower() for lang in languages]
 
     if not length_str:
-        length_str = gen_defaults.length
+        length_str = generator_config.length
 
     length_str = resolve_duration(length_str or "default")
 
     plugin = load_plugin(type_name)
-    inputs = plugin.Inputs.model_validate_json(format_args_json or "{}")
+    inputs = plugin.Inputs.model_validate(format_args)
 
     async with get_notebooklm_client() as client:
         critical_path = Path(__file__).parent / "data" / "critical.md"
@@ -234,7 +233,19 @@ async def _poll_single_task(
                     f"[{lang_code}] Task {task_id} not found in artifact list. Retrying..."
                 )
         except Exception as e:
-            logger.warning(f"[{lang_code}] Polling error for task {task_id}: {e}")
+            if not is_transient_network_exception(e):
+                logger.error(
+                    f"[{lang_code}] Non-retryable polling error for task {task_id}: {e}"
+                )
+                return {
+                    "status": TaskStatus.FAILED,
+                    "notebook_id": notebook_id,
+                    "artifact_id": task_id,
+                    "error": str(e),
+                }
+            logger.warning(
+                f"[{lang_code}] Transient network error polling task {task_id}: {e}"
+            )
 
         t = time.time() - started_at
         if t > MAX_POLL_TIMEOUT_SECONDS:

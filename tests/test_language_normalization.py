@@ -1,12 +1,14 @@
 """Unit tests for command line language string normalization."""
 
 from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
 from click.testing import CliRunner
 from pydantic import BaseModel
 
 from podcaster.audio_gen.core import create_podcast_audio_jobs
 from podcaster.cli import cli
+from podcaster.config import PodcastGenerationConfig
 from podcaster.models import TaskStatus
 
 
@@ -40,14 +42,13 @@ async def test_create_podcast_audio_jobs_normalizes_language_to_lowercase():
             type_name="main-article-with-author",
             languages=["EN", "Fr-FR", "De"],
             length_str="short",
-            format_args_json="{}",
+            format_args={},
+            generator_config=PodcastGenerationConfig(),
         ):
             tasks.append(t)
 
         assert len(tasks) == 3
-        langs = [
-            t.metadata["generate-podcast"]["language"] for t in tasks
-        ]
+        langs = [t.metadata["generate-podcast"]["language"] for t in tasks]
         assert langs == ["en", "fr-fr", "de"]
 
 
@@ -98,10 +99,17 @@ async def test_workflow_run_normalizes_languages(tmp_path):
         mock_research.return_value = AsyncMock()
         mock_cover.return_value = AsyncMock()
 
-        from podcaster.config import DeepDiveArticleConfig
+        from podcaster.config import (
+            DeepDiveArticleConfig,
+            ImporterConfig,
+            NativeImporterConfig,
+        )
         from podcaster.workflows.deep_dive_article import workflow as dd_wf
 
-        wf_config = DeepDiveArticleConfig()
+        wf_config = DeepDiveArticleConfig(
+            podcast_generator=PodcastGenerationConfig(languages=["EN"]),
+            importer=ImporterConfig(native=NativeImporterConfig()),
+        )
 
         await dd_wf.run(
             wf_config=wf_config,

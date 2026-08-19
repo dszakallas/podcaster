@@ -173,14 +173,21 @@ async def podcast_create(
     """Generate podcasts using NotebookLM. Outputs task JSON."""
     config = load_config()
     gen_cfg = config.podcast_generators.get(generator_key)
+    if not gen_cfg:
+        raise ValueError(
+            f"Generator preset '{generator_key}' not found in configuration"
+        )
+    format_args: dict[str, Any] = (
+        json.loads(format_args_json) if format_args_json else {}
+    )
     return audio_gen_core.create_podcast_audio_jobs(
         notebook_id,
         type,
         [lang.lower() for lang in language] if language else [],
         length,
-        format_args_json,
-        dry_run,
+        format_args,
         generator_config=gen_cfg,
+        dry_run=dry_run,
     )
 
 
@@ -260,13 +267,9 @@ def transcription_group():
 
 
 @transcription_group.command(name="create")
+@click.option("--arg-json", multiple=True, help="JSON artifact object(s) to process.")
 @click.option(
-    "--arg-json", multiple=True, help="JSON artifact object(s) to transcribe."
-)
-@click.option(
-    "--transcriber-key",
-    default="default",
-    help="Podcast transcriber key from configuration (default: default)",
+    "--transcriber-key", default="default", help="Key for transcriber preset config."
 )
 @verbose_option
 @async_command(stream=True)
@@ -274,10 +277,14 @@ async def transcription_create(arg_json, transcriber_key):
     """Start transcription tasks for podcast artifacts. Accepts input from --arg-json or stdin."""
     config = load_config()
     trans_cfg = config.podcast_transcribers.get(transcriber_key)
+    if not trans_cfg:
+        raise ValueError(
+            f"Transcriber preset '{transcriber_key}' not found in configuration"
+        )
     return transcription.create_transcription_jobs(
         parse_input_stream(arg_json, model_cls=PodcastGenArtifact),
-        transcription_config=trans_cfg,
         gcp_config=config.gcp,
+        transcription_config=trans_cfg,
     )
 
 
@@ -287,8 +294,10 @@ async def transcription_create(arg_json, transcriber_key):
 @async_command(stream=True)
 async def transcription_poll(arg_json):
     """Poll speech recognition batch jobs. Accepts input from --arg-json or stdin."""
+    config = load_config()
     return transcription.poll_transcription_jobs(
-        parse_input_stream(arg_json, model_cls=TranscriptionTask)
+        parse_input_stream(arg_json, model_cls=TranscriptionTask),
+        gcp_config=config.gcp,
     )
 
 
@@ -298,8 +307,10 @@ async def transcription_poll(arg_json):
 @async_command(stream=True)
 async def transcription_download(arg_json):
     """Download transcription result and write JSON and LRC files. Accepts input from --arg-json or stdin."""
+    config = load_config()
     return transcription.download_transcription_jobs(
-        parse_input_stream(arg_json, model_cls=TranscriptionTask)
+        parse_input_stream(arg_json, model_cls=TranscriptionTask),
+        gcp_config=config.gcp,
     )
 
 

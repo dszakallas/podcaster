@@ -1,5 +1,4 @@
 import asyncio
-import json
 import logging
 import os
 from pathlib import Path
@@ -12,7 +11,7 @@ from podcaster.config import (
     DeepDiveArticleConfig,
     GCPConfig,
     ImporterConfig,
-    MaybeRef,
+    PodcastGenerationConfig,
     PodcastTagsConfig,
     PodcastTranscriptionConfig,
     TaggingConfig,
@@ -210,7 +209,7 @@ async def _run_distribution_target(
 async def upload_and_wait_source(
     notebook_id: str,
     source_file: str,
-    importer: MaybeRef[ImporterConfig],
+    importer: ImporterConfig,
     title: Optional[str] = None,
 ) -> str:
     """Uploads a source file or URL and waits for processing."""
@@ -230,11 +229,17 @@ async def generate_download_and_tag_podcast(
     transcribe: bool = False,
     transcription_languages: Optional[list[str]] = None,
     transcribe_retry_count: int = 0,
-    transcription_config: Optional[MaybeRef[PodcastTranscriptionConfig]] = None,
+    transcription_config: Optional[PodcastTranscriptionConfig] = None,
     tagging_config: Optional[TaggingConfig] = None,
     gcp_config: Optional[GCPConfig] = None,
 ):
     """Polls, downloads, and tags a specific generation task once complete."""
+    if transcribe:
+        if gcp_config is None or transcription_config is None:
+            raise ValueError(
+                "gcp_config and transcription_config are mandatory when transcribe is enabled."
+            )
+
     task_id = task_info.task_id
     lang = task_info.metadata.get("generate-podcast", {}).get("language", "en")
     logger.debug(f"Processing task {task_id} for language {lang}...")
@@ -465,13 +470,16 @@ async def generate_download_and_tag_podcast(
                                     )
                                     state.save(notebook_dir)
 
+                                assert gcp_config is not None
+                                assert transcription_config is not None
+
                                 async def _create_and_save():
                                     async for (
                                         job
                                     ) in transcription.create_transcription_jobs(
                                         _single_artifact_stream(tagged),
-                                        transcription_config=transcription_config,
                                         gcp_config=gcp_config,
+                                        transcription_config=transcription_config,
                                     ):
                                         current_t = _task_state_for(
                                             task_id, lang, state
@@ -493,16 +501,21 @@ async def generate_download_and_tag_podcast(
 
                                 created_job_stream = _create_and_save()
 
+                            assert gcp_config is not None
+                            assert transcription_config is not None
+
                             async for created_tr in created_job_stream:
                                 async for (
                                     polled_tr
                                 ) in transcription.poll_transcription_jobs(
-                                    _single_artifact_stream(created_tr)
+                                    _single_artifact_stream(created_tr),
+                                    gcp_config=gcp_config,
                                 ):
                                     async for (
                                         downloaded_tr
                                     ) in transcription.download_transcription_jobs(
-                                        _single_artifact_stream(polled_tr)
+                                        _single_artifact_stream(polled_tr),
+                                        gcp_config=gcp_config,
                                     ):
                                         tagged = tagged.model_copy(
                                             update={
@@ -626,10 +639,23 @@ async def run(
         transcribe = wf_config.transcribe.enable
 
     # Resolve podcast transcriber and generator settings
-    transcriber_config = wf_config.transcribe.podcast_transcriber
-    transcription_langs = transcriber_config.languages
-
     generator_config = wf_config.podcast_generator
+    if not isinstance(generator_config, PodcastGenerationConfig):
+        raise ValueError(
+            f"Preset '{preset_name}' has invalid or missing generator configuration"
+        )
+
+    transcriber_config = wf_config.transcribe.podcast_transcriber
+    if transcribe and not isinstance(transcriber_config, PodcastTranscriptionConfig):
+        raise ValueError(
+            f"Preset '{preset_name}' has invalid or missing transcriber configuration"
+        )
+
+    transcription_langs = (
+        transcriber_config.languages
+        if isinstance(transcriber_config, PodcastTranscriptionConfig)
+        else []
+    )
     gen_languages = generator_config.languages
     gen_length = generator_config.length
     ignore_errors = generator_config.ignore_errors
@@ -655,9 +681,14 @@ async def run(
     if resume:
         logger.info(f"Resuming existing notebook: {notebook_id}")
     else:
+        importer_config = wf_config.importer
+        if not isinstance(importer_config, ImporterConfig):
+            raise ValueError(
+                f"Preset '{preset_name}' has invalid or missing importer configuration"
+            )
         notebook_info = await notebook_mod.init_notebook(
             podcast_dir=podcast_dir,
-            importer=wf_config.importer,
+            importer=importer_config,
             title=title,
             from_source=source_file,
         )
@@ -825,6 +856,11 @@ async def run(
             mode=mode,
         ):
             assert source_id is not None
+            fallback_imp = (
+                enrich_config.spec.fallback_importer
+                if isinstance(enrich_config.spec.fallback_importer, ImporterConfig)
+                else None
+            )
             research_res = await research.research_from_source(
                 notebook_id,
                 source_id,
@@ -834,7 +870,7 @@ async def run(
                 summary=summary_val,
                 suggested_duration=suggested_len_val,
                 on_start_callback=on_enrich_start,
-                fallback_importer=enrich_config.spec.fallback_importer,
+                fallback_importer=fallback_imp,
                 max_import_failures=enrich_config.spec.max_import_failures,
             )
             if state.enrichment:
@@ -848,83 +884,73 @@ async def run(
         elif research_res:
             length = research_res.suggested_duration or "20 minutes"
         else:
-            length = "20 minutes"  # Fallback
+            length = "20 minutes"
 
-        # Save auto-detected length to state configuration so it persists on resume
-        state.config.length = length
-        state.save(notebook_dir_path)
-        logger.info(f"Auto-detected length: {length}")
-
-    format_args = {"source_id": source_id}
-
-    # 3. Generate podcasts
-    tasks = []
-    languages_to_generate = []
-
-    for lang_code in languages:
-        t_state = next((t for t in state.tasks if t.language == lang_code), None)
-        if t_state:
-            if (
-                t_state.audio_path
-                and os.path.exists(t_state.audio_path)
-                and (
-                    not wf_config.tagging
-                    or not wf_config.tagging.enable
-                    or t_state.is_tagged
+    # 3. Generate Podcasts
+    tasks: list[PodcastGenTask] = []
+    pending_gen_tasks = [
+        t
+        for t in state.tasks
+        if t.status in (TaskStatus.PENDING, TaskStatus.IN_PROGRESS)
+    ]
+    if pending_gen_tasks:
+        logger.info(
+            f"Found {len(pending_gen_tasks)} pending/in-progress podcast generation tasks to resume."
+        )
+        for t in pending_gen_tasks:
+            tasks.append(
+                PodcastGenTask(
+                    notebook_id=notebook_id,
+                    task_id=t.task_id,
+                    status=t.status,
+                    metadata={"generate-podcast": {"language": t.language}},
+                    title=t.title,
                 )
-                and (
-                    not transcribe
-                    or (
-                        t_state.transcription
-                        and t_state.transcription[-1].status == TaskStatus.COMPLETED
-                    )
-                )
+            )
+    else:
+        languages_to_generate = [
+            lang
+            for lang in languages
+            if not any(
+                t.language == lang and t.status == TaskStatus.COMPLETED
+                for t in state.tasks
+            )
+        ]
+
+        if not languages_to_generate:
+            logger.info("All podcast generation tasks are already completed.")
+        else:
+            if not source_id:
+                raise ValueError("source_id is required for podcast audio generation.")
+            format_args = {"source_id": source_id}
+            async with log_task(
+                "generate_podcast_task",
+                logger,
+                notebook_id=notebook_id,
             ):
-                # Completely done
-                continue
-            if t_state.task_id and t_state.status != TaskStatus.FAILED:
-                logger.info(
-                    f"Reusing existing task {t_state.task_id} for language {lang_code}"
-                )
-                tasks.append(
-                    _build_generation_task(
-                        notebook_id,
-                        lang_code,
-                        t_state,
-                        length or "20 minutes",
-                        format_args,
-                    )
-                )
-                continue
-
-        languages_to_generate.append(lang_code)
-
-    if languages_to_generate:
-        async with log_task(
-            "generate_audio_tasks",
-            logger,
-            notebook_id=notebook_id,
-            languages=languages_to_generate,
-            length=length,
-        ):
-            async for task in audio_gen_core.create_podcast_audio_jobs(
-                notebook_id,
-                "main-article-with-author",
-                languages_to_generate,
-                length or "20 minutes",
-                json.dumps(format_args),
-                dry_run=False,
-                generator_config=generator_config,
-            ):
-                tasks.append(task)
-                _append_generated_state(state, task)
-        state.save(notebook_dir_path)
+                async for task in audio_gen_core.create_podcast_audio_jobs(
+                    notebook_id,
+                    "main-article-with-author",
+                    languages_to_generate,
+                    length or "20 minutes",
+                    format_args,
+                    generator_config=generator_config,
+                    dry_run=False,
+                ):
+                    tasks.append(task)
+                    _append_generated_state(state, task)
+            state.save(notebook_dir_path)
 
     # 4. Poll, download and tag
     processed_files = []
     if tasks:
         # Resolve transcribe_retry_count
         transcribe_retry_count = wf_config.transcribe.retry_count
+        trans_cfg = (
+            transcriber_config
+            if isinstance(transcriber_config, PodcastTranscriptionConfig)
+            else None
+        )
 
         processing_coros = [
             generate_download_and_tag_podcast(
@@ -937,7 +963,7 @@ async def run(
                 transcribe=transcribe,
                 transcription_languages=transcription_langs,
                 transcribe_retry_count=transcribe_retry_count,
-                transcription_config=transcriber_config,
+                transcription_config=trans_cfg,
                 tagging_config=wf_config.tagging,
                 gcp_config=gcp_config,
             )

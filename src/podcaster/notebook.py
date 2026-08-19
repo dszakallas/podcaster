@@ -4,7 +4,7 @@ from typing import Optional
 
 from notebooklm.exceptions import NotebookNotFoundError
 
-from .config import ImporterConfig, MaybeRef
+from .config import ImporterConfig
 from .utils import (
     get_notebooklm_client,
     get_or_create_notebook_dir,
@@ -22,7 +22,7 @@ TITLE_SUGGESTION_PROMPT = (
 async def upload_source(
     notebook_id: str,
     source_file: str,
-    importer: MaybeRef[ImporterConfig],
+    importer: ImporterConfig,
     title: Optional[str] = None,
 ) -> str:
     """Uploads a source file or URL and waits for processing."""
@@ -43,7 +43,7 @@ async def upload_source(
 
 async def init_notebook(
     podcast_dir: str,
-    importer: MaybeRef[ImporterConfig],
+    importer: ImporterConfig,
     title: Optional[str] = None,
     notebook_id: Optional[str] = None,
     from_source: Optional[str] = None,

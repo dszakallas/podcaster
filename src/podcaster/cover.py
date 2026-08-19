@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import time
 from typing import Any, AsyncGenerator, AsyncIterable, Callable, Optional
 
 from google import genai
@@ -12,13 +13,15 @@ from .models import CoverTask, TaskStatus
 from .utils import (
     get_notebooklm_client,
     get_or_create_notebook_dir,
+    is_transient_network_exception,
     retry_rpc,
 )
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_COVER_MODEL = "gemini-3.1-flash-image"
-POLL_INTERVAL_SECONDS = 15
+POLL_INTERVAL_SECONDS = 15.0
+MAX_POLL_TIMEOUT_SECONDS = 1800.0
 
 COVER_PROMPT_TEMPLATE = (
     "Based on this notebook summary, create a prompt for generating a podcast album cover. "
@@ -86,20 +89,48 @@ async def poll_cover_jobs(
     async for t in tasks:
         task_id = t.task_id
         logger.debug(f"Polling batch job: {task_id}")
+        started_at = time.time()
         while True:
-            job: Any = await retry_rpc(
-                genai_client.batches.get, name=task_id, logger=logger
-            )
-            state_str = str(job.state)
-            if "SUCCEEDED" in state_str:
-                yield t.model_copy(update={"status": TaskStatus.COMPLETED})
-                break
-            elif "FAILED" in state_str or "CANCELLED" in state_str:
-                error_msg = str(job.error) if job.error else "Job failed/cancelled"
+            try:
+                job: Any = await retry_rpc(
+                    genai_client.batches.get, name=task_id, logger=logger
+                )
+                state_str = str(job.state)
+                if "SUCCEEDED" in state_str:
+                    yield t.model_copy(update={"status": TaskStatus.COMPLETED})
+                    break
+                elif "FAILED" in state_str or "CANCELLED" in state_str:
+                    error_msg = str(job.error) if job.error else "Job failed/cancelled"
+                    yield t.model_copy(
+                        update={"status": TaskStatus.FAILED, "error": error_msg}
+                    )
+                    break
+            except Exception as e:
+                if not is_transient_network_exception(e):
+                    logger.error(
+                        f"Non-retryable error polling cover job {task_id}: {e}"
+                    )
+                    yield t.model_copy(
+                        update={"status": TaskStatus.FAILED, "error": str(e)}
+                    )
+                    break
+                logger.warning(
+                    f"Transient network error polling cover job {task_id}: {e}"
+                )
+
+            elapsed = time.time() - started_at
+            if elapsed > MAX_POLL_TIMEOUT_SECONDS:
+                logger.error(
+                    f"Polling cover task {task_id} timed out after {elapsed:.1f}s"
+                )
                 yield t.model_copy(
-                    update={"status": TaskStatus.FAILED, "error": error_msg}
+                    update={
+                        "status": TaskStatus.FAILED,
+                        "error": f"Cover task {task_id} timed out after {elapsed:.1f}s",
+                    }
                 )
                 break
+
             await asyncio.sleep(POLL_INTERVAL_SECONDS)
 
 

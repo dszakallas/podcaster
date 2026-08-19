@@ -18,6 +18,14 @@ This repository uses Nix `devenv` for managing its development environment and d
 - **Configuration Loading Scope**: Never call `load_config()` outside `cli.py`. Configuration objects
   (such as `gcp_config`, `wf_config`, etc.) MUST be loaded in `cli.py` and passed down to functions
   and workflow modules as explicit arguments.
+- **No On-The-Fly Config Instantiations**: Do NOT instantiate default configuration objects on the fly in
+  business logic (e.g. `gcp_config or GCPConfig()`). All configuration parameters are mandatory; domain logic and
+  worker functions must require concrete, validated configuration models. Missing or invalid configurations MUST
+  raise an explicit `ValueError` at boundary entry points (`cli.py` or workflow `run()`).
+- **Strict Boundary Parameter Normalization**: Domain logic functions MUST accept a single, well-typed input format.
+  Do NOT add representation handling, multi-type parameter conversion, or payload normalization (`Union[dict, str, BaseModel]`)
+  inside core business logic or worker functions. All raw parameter parsing (e.g. CLI JSON string deserialization)
+  MUST happen at the system boundary in `cli.py` before calling internal domain APIs.
 
 ## Workflows and Distribution
 
