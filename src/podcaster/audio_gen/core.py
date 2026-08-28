@@ -188,48 +188,31 @@ async def _poll_single_task(
 
     while True:
         try:
-            artifacts = await client.artifacts.list(notebook_id)
-            artifact = next((a for a in (artifacts or []) if a.id == task_id), None)
+            generation_status = await client.artifacts.poll_status(notebook_id, task_id)
+            logger.debug(
+                "[%s] Task %s status: %s",
+                lang_code,
+                task_id,
+                generation_status.status,
+            )
 
-            if artifact:
-                status_val = artifact.status
-                status_name = (
-                    artifact.status.name.lower()
-                    if hasattr(artifact.status, "name")
-                    else str(artifact.status).lower()
-                )
+            if generation_status.is_complete:
+                return {
+                    "status": TaskStatus.COMPLETED,
+                    "notebook_id": notebook_id,
+                    "artifact_id": task_id,
+                }
 
-                logger.debug(
-                    f"[{lang_code}] Task {task_id} status: {status_name} (val: {status_val})"
+            if generation_status.is_failed or generation_status.is_removed:
+                error_msg = generation_status.error or (
+                    f"NotebookLM artifact status is '{generation_status.status}'"
                 )
-
-                if status_val == 3 or status_name == "completed":
-                    return {
-                        "status": TaskStatus.COMPLETED,
-                        "notebook_id": notebook_id,
-                        "artifact_id": task_id,
-                        "title": artifact.title,
-                        "created_at": (
-                            artifact.created_at.isoformat()
-                            if hasattr(artifact, "created_at") and artifact.created_at
-                            else None
-                        ),
-                    }
-                elif status_val == 4 or status_name in ("failed", "error"):
-                    error_msg = (
-                        getattr(artifact, "error", None)
-                        or f"NotebookLM artifact status is '{status_name}' (val: {status_val})"
-                    )
-                    return {
-                        "status": TaskStatus.FAILED,
-                        "notebook_id": notebook_id,
-                        "artifact_id": task_id,
-                        "error": error_msg,
-                    }
-            else:
-                logger.warning(
-                    f"[{lang_code}] Task {task_id} not found in artifact list. Retrying..."
-                )
+                return {
+                    "status": TaskStatus.FAILED,
+                    "notebook_id": notebook_id,
+                    "artifact_id": task_id,
+                    "error": error_msg,
+                }
         except Exception as e:
             if not is_transient_network_exception(e):
                 logger.error(
@@ -361,4 +344,6 @@ async def download_artifacts(
                     metadata=art_item.metadata,
                 )
             except Exception as e:
-                logger.debug(f"Download failed for {artifact_id}: {e}")
+                raise RuntimeError(
+                    f"Failed to download artifact {artifact_id}: {e}"
+                ) from e
