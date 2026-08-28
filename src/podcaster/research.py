@@ -9,6 +9,8 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, AsyncGenerator, AsyncIterable, Callable, List, Optional
 
+from notebooklm.types import ResearchSource
+
 from .config import ImporterConfig, NotebookLMConfig, ScraperConfig
 from .models import ResearchResult, ResearchTask, TaskStatus
 from .utils.duration import parse_duration_minutes
@@ -718,7 +720,7 @@ async def poll_research_jobs(
             logger.debug(f"Found {len(found_sources)} sources.")
 
             # 6. Select sources to import
-            sources_to_import = found_sources
+            sources_to_import: list[ResearchSource] = found_sources
 
             # 7. Import sources
             imported = []
@@ -726,9 +728,8 @@ async def poll_research_jobs(
             if sources_to_import:
                 logger.debug(f"Importing {len(sources_to_import)} sources...")
                 for src in sources_to_import:
-                    src_url = str(
-                        src.get("url") if isinstance(src, dict) else src or ""
-                    )
+                    src_url = src.url
+                    src_title = src.title
                     import_success = False
                     try:
                         single_imported: Any = await client.research.import_sources(
@@ -752,6 +753,7 @@ async def poll_research_jobs(
                                 src_url,
                                 importer=fallback_importer,
                                 client=client,
+                                title=src_title,
                             )
                             if imp_res.get("source_id"):
                                 imported.append(

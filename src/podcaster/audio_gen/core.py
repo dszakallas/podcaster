@@ -144,11 +144,8 @@ async def create_podcast_audio_jobs(
                     },
                 )
 
-        tasks = await asyncio.gather(
-            *(create_for_language(lang_code) for lang_code in languages)
-        )
-        for task in tasks:
-            yield task
+        for lang_code in languages:
+            yield await create_for_language(lang_code)
 
 
 def _poll_interval(t: float, target: float) -> float:

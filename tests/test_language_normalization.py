@@ -55,15 +55,18 @@ async def test_create_podcast_audio_jobs_normalizes_language_to_lowercase():
 
 
 @pytest.mark.anyio
-async def test_create_podcast_audio_jobs_submits_languages_concurrently():
-    both_requests_started = asyncio.Event()
+async def test_create_podcast_audio_jobs_submits_languages_sequentially():
+    english_request_started = asyncio.Event()
+    release_english_request = asyncio.Event()
+    submitted_languages = []
     mock_client = AsyncMock()
 
     async def generate_audio(notebook_id, language, instructions, audio_length):
         del notebook_id, instructions, audio_length
-        if language == "fr":
-            both_requests_started.set()
-        await both_requests_started.wait()
+        submitted_languages.append(language)
+        if language == "en":
+            english_request_started.set()
+            await release_english_request.wait()
         return MagicMock(status=TaskStatus.IN_PROGRESS, task_id=f"task-{language}")
 
     mock_client.artifacts.generate_audio.side_effect = generate_audio
@@ -78,13 +81,15 @@ async def test_create_podcast_audio_jobs_submits_languages_concurrently():
         mock_plugin.get_prompt = AsyncMock(return_value="prompt")
         mock_load_plugin.return_value = mock_plugin
 
-        tasks = await asyncio.wait_for(
+        collect_task = asyncio.create_task(
             _collect_audio_jobs(
-                languages=["en", "fr"],
-                generator_config=PodcastGenerationConfig(),
-            ),
-            timeout=0.2,
+                languages=["en", "fr"], generator_config=PodcastGenerationConfig()
+            )
         )
+        await english_request_started.wait()
+        assert submitted_languages == ["en"]
+        release_english_request.set()
+        tasks = await collect_task
 
     assert [task.task_id for task in tasks] == ["task-en", "task-fr"]
 

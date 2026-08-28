@@ -5,6 +5,7 @@ import re
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from notebooklm.types import ResearchSource
 
 from podcaster.config import NotebookLMConfig
 from podcaster.research import (
@@ -174,6 +175,74 @@ def test_import_source_uses_the_supplied_client() -> None:
 
 
 class TestResearchFallbackAndImportFailures:
+    def test_fallback_importer_uses_typed_research_source_url(self, monkeypatch):
+        from podcaster.research import ResearchTask, poll_research_jobs
+
+        source_url = "https://digitalcommons.uri.edu/cgi/viewcontent.cgi?article=4046"
+        source = ResearchSource(url=source_url, title="Dolphin vocalizations")
+        imported_sources = []
+
+        class DummyResearchClient:
+            async def poll(self, notebook_id):
+                return {"status": "completed", "sources": [source]}
+
+            async def import_sources(self, notebook_id, task_id, sources):
+                raise RuntimeError("Native import failed")
+
+        class DummyClientCtx:
+            async def __aenter__(self):
+                return type(
+                    "DummyClient",
+                    (),
+                    {
+                        "research": DummyResearchClient(),
+                        "sources": type(
+                            "DummySources",
+                            (),
+                            {
+                                "list": lambda self, n: [],
+                                "delete": lambda self, n, i: None,
+                            },
+                        )(),
+                    },
+                )()
+
+            async def __aexit__(self, exc_type, exc_val, exc_tb):
+                pass
+
+        async def fallback_import(notebook_id, url, importer, client, title=None):
+            imported_sources.append((url, title))
+            return {"source_id": "fallback-source"}
+
+        monkeypatch.setattr(
+            "podcaster.research.get_notebooklm_client", lambda _config: DummyClientCtx()
+        )
+        monkeypatch.setattr("podcaster.research.import_source", fallback_import)
+
+        async def gen():
+            yield ResearchTask(
+                notebook_id="nb1",
+                source_id="src1",
+                task_id="t1",
+                topic="Topic",
+                summary="Summary",
+                suggested_duration="default",
+            )
+
+        async def run_test():
+            results = [
+                result
+                async for result in poll_research_jobs(
+                    gen(),
+                    NotebookLMConfig(),
+                    fallback_importer=MagicMock(),
+                )
+            ]
+            assert results[0].imported_count == 1
+
+        asyncio.run(run_test())
+        assert imported_sources == [(source_url, "Dolphin vocalizations")]
+
     def test_max_import_failures_exceeded_raises(self, monkeypatch):
         from podcaster.research import ResearchTask, poll_research_jobs
 
@@ -183,8 +252,8 @@ class TestResearchFallbackAndImportFailures:
                 return {
                     "status": "completed",
                     "sources": [
-                        {"url": "https://bad1.com"},
-                        {"url": "https://bad2.com"},
+                        ResearchSource(url="https://bad1.com", title="Bad 1"),
+                        ResearchSource(url="https://bad2.com", title="Bad 2"),
                     ],
                 }
 
@@ -244,7 +313,9 @@ class TestResearchFallbackAndImportFailures:
             async def poll(self, notebook_id):
                 return {
                     "status": "completed",
-                    "sources": [{"url": "https://bad1.com"}],
+                    "sources": [
+                        ResearchSource(url="https://bad1.com", title="Bad 1")
+                    ],
                 }
 
             async def import_sources(self, notebook_id, task_id, sources):
