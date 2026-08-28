@@ -1,4 +1,7 @@
+import os
+import re
 from typing import (
+    Annotated,
     Any,
     Dict,
     ForwardRef,
@@ -12,6 +15,7 @@ from typing import (
     get_origin,
 )
 
+import yaml
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -25,9 +29,19 @@ from pydantic import (
 T = TypeVar("T", bound=BaseModel)
 
 
+def _reconstruct_ref(data: dict) -> "Ref[Any]":
+    return Ref(**data)
+
+
 class Ref(BaseModel, Generic[T]):
     model_config = ConfigDict(extra="allow")
     ref: Optional[str] = None
+
+    def __reduce__(self):
+        data = {"ref": self.ref}
+        if self.model_extra:
+            data.update(self.model_extra)
+        return (_reconstruct_ref, (data,))
 
     @model_validator(mode="before")
     @classmethod
@@ -36,7 +50,7 @@ class Ref(BaseModel, Generic[T]):
             return {"ref": data}
         return data
 
-    @model_validator(mode="after")
+    @model_validator(mode="after")  # pyright: ignore[reportGeneralTypeIssues]
     def _validate_extra(self) -> "Ref[T]":
         metadata = getattr(self.__class__, "__pydantic_generic_metadata__", None)
         if not metadata or not metadata.get("args"):
@@ -142,17 +156,10 @@ class AgentConfig(BaseModel):
     args: List[str] = Field(default_factory=list)
 
 
-class ScraperAgentConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    ref: Optional[str] = None
-    command: Optional[str] = None
-    args: Optional[List[str]] = None
-
-
 class ScraperConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     tool: str = "playwright"
-    agent: Optional[MaybeRef[AgentConfig]] = None
+    agent: MaybeRef[AgentConfig]
 
 
 class ChainImporterConfig(BaseModel):
@@ -175,8 +182,12 @@ class EnrichWebConfig(BaseModel):
     spec: EnrichWebSpecConfig = Field(default_factory=EnrichWebSpecConfig)
 
 
+DEFAULT_COVER_MODEL = "gemini-3.1-flash-image"
+
+
 class GenerateCoverSpecConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    model: str = DEFAULT_COVER_MODEL
 
 
 class GenerateCoverConfig(BaseModel):
@@ -196,9 +207,7 @@ class TranscribeConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     enable: bool = False
     retry_count: int = 0
-    podcast_transcriber: MaybeRef[PodcastTranscriptionConfig] = Field(
-        default_factory=Ref[PodcastTranscriptionConfig]
-    )
+    podcast_transcriber: MaybeRef[PodcastTranscriptionConfig]
 
 
 class RsyncDistributionConfig(BaseModel):
@@ -211,16 +220,27 @@ class RsyncDistributionConfig(BaseModel):
 class PlexNotifierConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     section_id: Union[int, str]
-    server_library_path: Optional[str] = None
-    server_url: Optional[str] = None
-    token: Optional[str] = None
+    server_library_path: Annotated[
+        Optional[str], Field(json_schema_extra={"env_var": True})
+    ] = None
+    server_url: Annotated[Optional[str], Field(json_schema_extra={"env_var": True})] = (
+        None
+    )
+    token: Annotated[Optional[str], Field(json_schema_extra={"env_var": True})] = None
 
 
 class DiscordNotifierConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    webhook_url: Optional[str] = None
-    bot_token: Optional[str] = None
-    channel_id: Optional[Union[int, str]] = None
+    webhook_url: Annotated[
+        Optional[str], Field(json_schema_extra={"env_var": True})
+    ] = None
+    bot_token: Annotated[Optional[str], Field(json_schema_extra={"env_var": True})] = (
+        None
+    )
+    channel_id: Annotated[
+        Optional[Union[int, str]],
+        Field(json_schema_extra={"env_var": True}),
+    ] = None
 
 
 class NotifierConfig(BaseModel):
@@ -229,44 +249,60 @@ class NotifierConfig(BaseModel):
     discord: Optional[DiscordNotifierConfig] = None
 
 
-NotifierRef = Ref[NotifierConfig]
-
-
 class DistributionConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     rsync: Optional[RsyncDistributionConfig] = None
     notifiers: List[MaybeRef[NotifierConfig]] = Field(default_factory=list)
 
 
-DistributionRef = Ref[DistributionConfig]
-
-
 class TaggingConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     enable: bool = True
-    spec: Optional[MaybeRef[PodcastTagsConfig]] = Field(
-        default_factory=lambda: Ref[PodcastTagsConfig](ref="default")
-    )
+    spec: MaybeRef[PodcastTagsConfig]
 
 
-class DeepDiveArticleConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid", populate_by_name=True)
-    type: Literal["deep_dive_article"] = "deep_dive_article"
-    podcast_generator: MaybeRef[PodcastGenerationConfig] = Field(
-        default_factory=Ref[PodcastGenerationConfig]
-    )
-    importer: MaybeRef[ImporterConfig] = Field(
-        default_factory=lambda: Ref[ImporterConfig](ref="default"),
-    )
-    enrich_web: EnrichWebConfig = Field(default_factory=EnrichWebConfig)
-    generate_cover: GenerateCoverConfig = Field(default_factory=GenerateCoverConfig)
-    transcribe: TranscribeConfig = Field(default_factory=TranscribeConfig)
-    tagging: TaggingConfig = Field(default_factory=TaggingConfig)
-    distribute: List[MaybeRef[DistributionConfig]] = Field(default_factory=list)
+class WorkflowPresetsConfig(RootModel[Dict[str, BaseModel]]):
+    """Workflow presets parsed by their declared workflow plugin."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _parse_workflow_plugins(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+
+        from podcaster.workflows import get_workflow_plugin
+
+        parsed: dict[str, BaseModel] = {}
+        for preset_name, raw_config in data.items():
+            if isinstance(raw_config, BaseModel):
+                raw_config = raw_config.model_dump()
+            if not isinstance(raw_config, dict):
+                raise ValueError(
+                    f"Workflow preset '{preset_name}' must be a configuration mapping."
+                )
+
+            workflow_type = raw_config.get("type")
+            if not isinstance(workflow_type, str):
+                raise ValueError(
+                    f"Workflow preset '{preset_name}' must declare a string 'type'."
+                )
+
+            plugin = get_workflow_plugin(workflow_type)
+            if plugin is None:
+                raise ValueError(
+                    f"Unknown workflow type '{workflow_type}' for preset '{preset_name}'."
+                )
+            parsed[preset_name] = plugin.config_type.model_validate(raw_config)
+
+        return parsed
 
 
-class WorkflowConfig(RootModel):
-    root: Dict[str, DeepDiveArticleConfig]
+class WorkflowConfig(BaseModel):
+    """Workflow defaults and named workflow presets."""
+
+    model_config = ConfigDict(extra="forbid")
+    workdir: str = "."
+    presets: WorkflowPresetsConfig
 
 
 class GCPConfig(BaseModel):
@@ -276,59 +312,38 @@ class GCPConfig(BaseModel):
     gcs_bucket: Optional[str] = None
 
 
+class DBOSConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    engine: str = "sqlite"
+    sqlite_path: str = "~/.podcaster/dbos.db"
+    postgres_url: Optional[str] = None
+
+
+class NotebookLMConfig(BaseModel):
+    """Optional settings used to locate a NotebookLM browser profile."""
+
+    model_config = ConfigDict(extra="forbid")
+    home: Annotated[Optional[str], Field(json_schema_extra={"env_var": True})] = None
+    storage_state: Annotated[
+        Optional[str], Field(json_schema_extra={"env_var": True})
+    ] = None
+    profile: Annotated[Optional[str], Field(json_schema_extra={"env_var": True})] = None
+
+
 class AppConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    podcast_dir: str = "podcasts"
-    scrapers: Dict[str, ScraperConfig] = Field(
-        default_factory=lambda: {"default": ScraperConfig(tool="playwright")}
-    )
-    agents: Dict[str, AgentConfig] = Field(default_factory=dict)
-    podcast_generators: Dict[str, PodcastGenerationConfig] = Field(
-        default_factory=lambda: {"default": PodcastGenerationConfig()}
-    )
-    podcast_transcribers: Dict[str, PodcastTranscriptionConfig] = Field(
-        default_factory=lambda: {"default": PodcastTranscriptionConfig()}
-    )
-    importers: Dict[str, ImporterConfig] = Field(
-        default_factory=lambda: {
-            "default": ImporterConfig(
-                chain=ChainImporterConfig(
-                    importers=[
-                        Ref[ImporterConfig](ref="native"),
-                        Ref[ImporterConfig](ref="scraper"),
-                    ]
-                )
-            ),
-            "native": ImporterConfig(
-                match=[
-                    ".*",
-                    "!https?://.*wsj\\.com/.*",
-                    "!https?://.*forbes\\.com/.*",
-                    "!https?://.*politico\\.eu/.*",
-                    "!https?://.*nytimes\\.com/.*",
-                    "!https?://.*hvg\\.hu/.*",
-                    "!https?://.*msn\\.com/.*",
-                    "!https?://.*archive\\.(ph|is)/.*",
-                ],
-                native=NativeImporterConfig(),
-            ),
-            "scraper": ImporterConfig(
-                match=["https?://.*", "!file:.*", "!gdrive:.*"],
-                scraper=Ref[ScraperConfig](ref="default"),
-            ),
-        },
-    )
-    podcast_tags: Dict[str, PodcastTagsConfig] = Field(
-        default_factory=lambda: {"default": PodcastTagsConfig()}
-    )
-    workflow: WorkflowConfig = Field(default_factory=lambda: WorkflowConfig(root={}))
-    notifiers: Dict[str, NotifierConfig] = Field(
-        default_factory=dict,
-    )
-    distributions: Dict[str, DistributionConfig] = Field(
-        default_factory=dict,
-    )
-    gcp: GCPConfig = Field(default_factory=GCPConfig)
+    dbos: DBOSConfig
+    scrapers: Dict[str, ScraperConfig]
+    agents: Dict[str, AgentConfig]
+    podcast_generators: Dict[str, PodcastGenerationConfig]
+    podcast_transcribers: Dict[str, PodcastTranscriptionConfig]
+    importers: Dict[str, ImporterConfig]
+    podcast_tags: Dict[str, PodcastTagsConfig]
+    workflow: WorkflowConfig
+    notifiers: Dict[str, NotifierConfig]
+    distributions: Dict[str, DistributionConfig]
+    gcp: GCPConfig
+    notebooklm: NotebookLMConfig = Field(default_factory=NotebookLMConfig)
 
 
 ChainImporterConfig.model_rebuild()
@@ -403,6 +418,13 @@ class RefResolver:
 
         return None
 
+    @staticmethod
+    def _contains_ref(annotation: Any) -> bool:
+        """Return whether an annotation contains a Ref at any nesting level."""
+        if isinstance(annotation, type) and issubclass(annotation, Ref):
+            return True
+        return any(RefResolver._contains_ref(arg) for arg in get_args(annotation))
+
     def _resolve_ref(
         self,
         ref: Ref,
@@ -452,6 +474,7 @@ class RefResolver:
                     "_ref_path",
                     f"{field_name}.{name}" if name else None,
                 )
+                object.__setattr__(target, "_config_registry", field_name)
             except Exception:
                 pass
 
@@ -516,6 +539,9 @@ class RefResolver:
                                         object.__setattr__(
                                             v, "_ref_path", f"{field_name}.{k}"
                                         )
+                                        object.__setattr__(
+                                            v, "_config_registry", field_name
+                                        )
                                     except Exception:
                                         pass
                                 self._walk(v, root, cache, visited)
@@ -560,4 +586,100 @@ def resolve_refs(config: "AppConfig") -> "AppConfig":
     """Resolve all Ref instances in an AppConfig tree."""
     resolver = RefResolver(_APP_CONFIG_REGISTRIES)
     resolver.resolve(config)
+    _load_environment_defaults(config)
     return config
+
+
+def _load_environment_defaults(config: "AppConfig") -> None:
+    """Fill annotated, unset configuration fields from environment variables."""
+    visited: set[int] = set()
+
+    def walk(
+        value: Any,
+        registry_key: Optional[str] = None,
+        config_key: Optional[str] = None,
+        field_path: tuple[str, ...] = (),
+    ) -> None:
+        if isinstance(value, BaseModel):
+            value_id = id(value)
+            if value_id in visited:
+                return
+            visited.add(value_id)
+            own_registry = getattr(value, "_config_registry", None)
+            if own_registry:
+                model_registry = own_registry
+                model_key = getattr(value, "_ref_name", None)
+                model_path = ()
+            else:
+                model_registry = registry_key
+                model_key = config_key
+                model_path = field_path
+            _load_model_environment(value, model_registry, model_key, model_path)
+            for field_name, field_info in type(value).model_fields.items():
+                is_reference_boundary = RefResolver._contains_ref(field_info.annotation)
+                child_registry = None if is_reference_boundary else model_registry
+                child_key = None if is_reference_boundary else model_key
+                child_path = () if is_reference_boundary else model_path + (field_name,)
+                walk(
+                    getattr(value, field_name),
+                    child_registry,
+                    child_key,
+                    child_path,
+                )
+        elif isinstance(value, dict):
+            for item in value.values():
+                walk(item, registry_key, config_key, field_path)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item, registry_key, config_key, field_path)
+
+    walk(config)
+
+
+def _load_model_environment(
+    model: BaseModel,
+    registry_key: Optional[str],
+    config_key: Optional[str],
+    field_path: tuple[str, ...],
+) -> None:
+    """Fill annotated, unset fields on one configuration model."""
+    for field_name, field_info in type(model).model_fields.items():
+        extra = field_info.json_schema_extra
+        uses_environment = isinstance(extra, dict) and extra.get("env_var") is True
+        if uses_environment and getattr(model, field_name) is None:
+            env_var = _environment_name(field_path + (field_name,))
+            value = _get_environment_value(registry_key, config_key, env_var)
+            if value is not None:
+                setattr(model, field_name, value)
+
+
+def _environment_name(field_path: tuple[str, ...]) -> str:
+    """Convert a configuration field path into an uppercase environment name."""
+    return "_".join(field_path).upper()
+
+
+def _get_environment_value(
+    registry_key: Optional[str], config_key: Optional[str], env_var: str
+) -> Optional[str]:
+    """Look up a registry-scoped environment variable before a global fallback."""
+    if registry_key and config_key:
+        sanitized_key = re.sub(r"[^A-Za-z0-9]+", "_", config_key).strip("_").upper()
+        scoped_value = os.environ.get(
+            f"{registry_key.upper()}_{sanitized_key}_{env_var}"
+        )
+        if scoped_value:
+            return scoped_value
+    value = os.environ.get(env_var)
+    return value if value else None
+
+
+def load_config() -> "AppConfig":
+    """Load, validate, resolve, and enrich the project's configuration file."""
+    from pathlib import Path
+
+    config_path = Path("podcaster.yaml")
+    data = {}
+    if config_path.exists():
+        with config_path.open() as file_handle:
+            data = yaml.safe_load(file_handle) or {}
+    return resolve_refs(AppConfig.model_validate(data))

@@ -1,6 +1,6 @@
 """Unit tests for pure utility functions in podcaster.audio_gen.core."""
 
-from notebooklm.rpc import AudioLength
+from notebooklm.rpc.types import AudioLength
 
 from podcaster.audio_gen.core import duration_to_audio_length
 

@@ -9,15 +9,12 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, AsyncGenerator, AsyncIterable, Callable, List, Optional
 
-from .config import ImporterConfig, ScraperConfig
+from .config import ImporterConfig, NotebookLMConfig, ScraperConfig
 from .models import ResearchResult, ResearchTask, TaskStatus
-from .utils import (
-    RetryingNotebookLMClient,
-    get_notebooklm_client,
-    is_transient_network_exception,
-    parse_duration_minutes,
-    sanitize,
-)
+from .utils.duration import parse_duration_minutes
+from .utils.files import sanitize
+from .utils.notebooklm import RetryingNotebookLMClient, get_notebooklm_client
+from .utils.retry import is_transient_network_exception
 
 logger = logging.getLogger(__name__)
 
@@ -52,8 +49,77 @@ RESEARCH_SUMMARY_PROMPT = (
     "2. Suggest a duration for a deep-dive podcast about this article. "
     "Reply with a plain duration string like '15 minutes' or '1 hour 5 minutes'. "
     "Typical range: 10–45 minutes.\n"
-    'Respond in NDJSON format: {"summary": "...", "suggested_duration": "..."}'
+    "Do NOT include any citations, footnote markers (such as [1], [2]), or source references anywhere in your response.\n"
+    'Respond strictly in JSON format: {"summary": "...", "suggested_duration": "..."}'
 )
+
+
+def strip_citations(text: str) -> str:
+    """Strips inline citation markers (e.g., [1], [1, 2], [1-3]) and trailing citation blocks from text."""
+    lines = text.splitlines()
+    cleaned_lines = []
+    for line in lines:
+        stripped_line = line.strip()
+        if re.match(
+            r"^(?:Sources?|Citations?|References?|\[\d+\](?:\s|:|$))",
+            stripped_line,
+            re.IGNORECASE,
+        ):
+            break
+        cleaned_lines.append(line)
+    text = "\n".join(cleaned_lines)
+
+    # Remove inline citation markers like [1], [1, 2], [1-3]
+    text = re.sub(r"\s*\[\d+(?:\s*[,-\u2013\u2014]\s*\d+)*\]", "", text)
+    # Clean up multiple whitespace characters within lines
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    return text.strip()
+
+
+def parse_summary_response(answer_text: str) -> tuple[str, str]:
+    """Parses the summary and suggested duration from NotebookLM chat response,
+    robustly handling markdown wrappers, citations, and invalid JSON constructs.
+    """
+    raw_text = answer_text.strip()
+
+    # Remove markdown code fences if present
+    fence_match = re.search(r"```(?:json)?\s*(.*?)\s*```", raw_text, re.DOTALL)
+    text_to_parse = fence_match.group(1).strip() if fence_match else raw_text
+
+    data = None
+
+    # Attempt 1: parse as-is from first '{' using JSONDecoder.raw_decode
+    start_idx = text_to_parse.find("{")
+    if start_idx != -1:
+        decoder = json.JSONDecoder()
+        try:
+            data, _ = decoder.raw_decode(text_to_parse, start_idx)
+        except Exception:
+            pass
+
+        # Attempt 2: if attempt 1 failed, strip citation markers from text_to_parse and retry
+        if not isinstance(data, dict):
+            cleaned_text = strip_citations(text_to_parse)
+            start_idx = cleaned_text.find("{")
+            if start_idx != -1:
+                try:
+                    data, _ = decoder.raw_decode(cleaned_text, start_idx)
+                except Exception:
+                    pass
+
+    if isinstance(data, dict):
+        summary = str(data.get("summary", ""))
+        suggested_duration = str(data.get("suggested_duration", ""))
+
+        summary = strip_citations(summary)
+        suggested_duration = strip_citations(suggested_duration)
+
+        if summary:
+            return summary, suggested_duration
+
+    # Fallback if no valid JSON dict could be extracted or summary was empty
+    cleaned_fallback = strip_citations(raw_text)
+    return cleaned_fallback, ""
 
 
 def normalize_source(source: str) -> str:
@@ -93,8 +159,8 @@ class Importer(ABC):
         self,
         notebook_id: str,
         source: str,
+        client: RetryingNotebookLMClient,
         title: Optional[str] = None,
-        client: Optional[RetryingNotebookLMClient] = None,
     ) -> dict:
         """Executes the import operation on a given source string."""
         ...
@@ -115,8 +181,8 @@ class NativeImporter(Importer):
         self,
         notebook_id: str,
         source: str,
+        client: RetryingNotebookLMClient,
         title: Optional[str] = None,
-        client: Optional[RetryingNotebookLMClient] = None,
     ) -> dict:
         if not self.matches(source):
             return {
@@ -147,8 +213,8 @@ class ScraperImporter(Importer):
         self,
         notebook_id: str,
         source: str,
+        client: RetryingNotebookLMClient,
         title: Optional[str] = None,
-        client: Optional[RetryingNotebookLMClient] = None,
     ) -> dict:
         if not self.matches(source):
             return {
@@ -183,8 +249,8 @@ class ChainImporter(Importer):
         self,
         notebook_id: str,
         source: str,
+        client: RetryingNotebookLMClient,
         title: Optional[str] = None,
-        client: Optional[RetryingNotebookLMClient] = None,
     ) -> dict:
         if not self.matches(source):
             return {
@@ -198,7 +264,7 @@ class ChainImporter(Importer):
                 f"Chain importer executing sub-importer {idx} ({sub_importer.__class__.__name__}) on '{source}'"
             )
             res = await sub_importer.execute(
-                notebook_id, source, title=title, client=client
+                notebook_id, source, client=client, title=title
             )
             if res.get("source_id"):
                 return res
@@ -245,14 +311,14 @@ def build_importer(importer_cfg: ImporterConfig) -> Importer:
 
 async def execute_importer(
     importer: ImporterConfig,
+    client: RetryingNotebookLMClient,
     notebook_id: str = "",
     source: str = "",
     title: Optional[str] = None,
-    client: Optional[RetryingNotebookLMClient] = None,
 ) -> dict:
     """Executes an importer on a source string using the Importer interface."""
     imp_instance = build_importer(importer)
-    return await imp_instance.execute(notebook_id, source, title=title, client=client)
+    return await imp_instance.execute(notebook_id, source, client=client, title=title)
 
 
 async def scrape_source(
@@ -414,12 +480,9 @@ evaluate_handler_match = evaluate_importer_match
 async def _import_native(
     notebook_id: str,
     source: str,
+    client: RetryingNotebookLMClient,
     title: Optional[str] = None,
-    client: Optional[RetryingNotebookLMClient] = None,
 ) -> str:
-    if client is None:
-        raise ValueError("Client is required for _import_native")
-
     if (
         "docs.google.com" in source
         or "drive.google.com" in source
@@ -472,13 +535,10 @@ async def _import_native(
 async def _import_scraper(
     notebook_id: str,
     source: str,
+    client: RetryingNotebookLMClient,
     scraper_config: Optional[Any] = None,
     title: Optional[str] = None,
-    client: Optional[RetryingNotebookLMClient] = None,
 ) -> str:
-    if client is None:
-        raise ValueError("Client is required for _import_scraper")
-
     if (
         not source.startswith(("http://", "https://"))
         or "docs.google.com" in source
@@ -521,112 +581,88 @@ async def import_source(
     notebook_id: str,
     source: str,
     importer: ImporterConfig,
+    client: RetryingNotebookLMClient,
     title: Optional[str] = None,
-    client: Optional[RetryingNotebookLMClient] = None,
 ) -> dict:
-    """Imports a source into NotebookLM using configured importer (native, scraper, or chain)."""
+    """Import a source into NotebookLM using an already-open client."""
     source = normalize_source(source)
-
-    if client is not None:
-        return await execute_importer(
-            importer, notebook_id, source, title=title, client=client
-        )
-
-    async with get_notebooklm_client() as c:
-        return await execute_importer(
-            importer, notebook_id, source, title=title, client=c
-        )
+    return await execute_importer(
+        importer, client=client, notebook_id=notebook_id, source=source, title=title
+    )
 
 
 async def import_web_source(
     notebook_id: str,
     url: str,
     importer: ImporterConfig,
+    client: RetryingNotebookLMClient,
     title: Optional[str] = None,
 ) -> dict:
     """Delegates to import_source for generalized importing with fallback."""
-    return await import_source(notebook_id, url, importer=importer, title=title)
+    return await import_source(
+        notebook_id, url, importer=importer, client=client, title=title
+    )
 
 
 async def create_research_job(
     notebook_id: str,
     source_id: str,
+    client: RetryingNotebookLMClient,
     mode: str = "fast",
 ) -> ResearchTask:
-    async with get_notebooklm_client() as raw_client:
-        client: Any = raw_client
-        # 1. Fetch source guide for keywords
-        logger.debug(f"Fetching guide for source {source_id}...")
-        guide = await client.sources.get_guide(notebook_id, source_id)
-        keywords = guide.get("keywords", []) if isinstance(guide, dict) else []
-        if not keywords:
-            logger.debug(f"No keywords found in guide for source {source_id}.")
-            topic = DEFAULT_RESEARCH_TOPIC  # Fallback topic
-        else:
-            topic = ", ".join(keywords)
+    """Create a research job using an already-open NotebookLM client."""
+    client_any: Any = client
+    logger.debug(f"Fetching guide for source {source_id}...")
+    guide = await client_any.sources.get_guide(notebook_id, source_id)
+    keywords = guide.get("keywords", []) if isinstance(guide, dict) else []
+    if not keywords:
+        logger.debug(f"No keywords found in guide for source {source_id}.")
+        topic = DEFAULT_RESEARCH_TOPIC
+    else:
+        topic = ", ".join(keywords)
 
-        # 2. Get one-sentence summary and suggested duration
-        logger.debug(
-            f"Generating summary and duration suggestion for source {source_id}..."
+    logger.debug(
+        f"Generating summary and duration suggestion for source {source_id}..."
+    )
+    summary_res: Any = await client_any.chat.ask(
+        notebook_id, RESEARCH_SUMMARY_PROMPT, source_ids=[source_id]
+    )
+
+    answer_text = str(getattr(summary_res, "answer", summary_res))
+    summary, suggested_duration = parse_summary_response(answer_text)
+
+    if not suggested_duration or parse_duration_minutes(suggested_duration) is None:
+        logger.warning(
+            f"Could not parse suggested duration {suggested_duration!r}, defaulting to {DEFAULT_RESEARCH_DURATION}."
         )
-        summary_q = RESEARCH_SUMMARY_PROMPT
-        summary_res: Any = await client.chat.ask(
-            notebook_id, summary_q, source_ids=[source_id]
-        )
+        suggested_duration = DEFAULT_RESEARCH_DURATION
 
-        try:
-            # Find the JSON block in the answer
-            answer_text = str(getattr(summary_res, "answer", summary_res))
-            match = re.search(r"\{.*\}", answer_text, re.DOTALL)
-            if match:
-                data = json.loads(match.group(0))
-                summary = data.get("summary", answer_text)
-                suggested_duration = data.get("suggested_duration", "")
-            else:
-                summary = answer_text
-                suggested_duration = ""
-        except Exception:
-            logger.warning(
-                "Failed to parse summary and duration from response, using defaults."
-            )
-            summary = str(getattr(summary_res, "answer", summary_res))
-            suggested_duration = ""
+    prompt = f"Topic: {topic}. Context: {summary}"
+    logger.debug(f"Starting research with prompt: {prompt} (mode: {mode})")
+    job: Any = await client_any.research.start(notebook_id, prompt, mode=mode)
+    if not job:
+        raise RuntimeError("Failed to start research job.")
 
-        if not suggested_duration or parse_duration_minutes(suggested_duration) is None:
-            logger.warning(
-                f"Could not parse suggested duration {suggested_duration!r}, defaulting to {DEFAULT_RESEARCH_DURATION}."
-            )
-            suggested_duration = DEFAULT_RESEARCH_DURATION
-
-        # 3. Assemble research prompt
-        prompt = f"Topic: {topic}. Context: {summary}"
-        logger.debug(f"Starting research with prompt: {prompt} (mode: {mode})")
-
-        # 4. Start research
-        job: Any = await client.research.start(notebook_id, prompt, mode=mode)
-        if not job:
-            raise RuntimeError("Failed to start research job.")
-
-        task_id = (
-            job.get("task_id") if isinstance(job, dict) else getattr(job, "task_id", "")
-        ) or ""
-
-        return ResearchTask(
-            notebook_id=notebook_id,
-            source_id=source_id,
-            task_id=task_id,
-            topic=topic,
-            summary=summary,
-            suggested_duration=suggested_duration,
-        )
+    task_id = (
+        job.get("task_id") if isinstance(job, dict) else getattr(job, "task_id", "")
+    ) or ""
+    return ResearchTask(
+        notebook_id=notebook_id,
+        source_id=source_id,
+        task_id=task_id,
+        topic=topic,
+        summary=summary,
+        suggested_duration=suggested_duration,
+    )
 
 
 async def poll_research_jobs(
     tasks: AsyncIterable[ResearchTask],
+    notebooklm_config: NotebookLMConfig,
     fallback_importer: Optional[ImporterConfig] = None,
     max_import_failures: Optional[int] = None,
 ) -> AsyncGenerator[ResearchResult, None]:
-    async with get_notebooklm_client() as raw_client:
+    async with get_notebooklm_client(notebooklm_config) as raw_client:
         client: Any = raw_client
         async for t in tasks:
             notebook_id = t.notebook_id
@@ -786,6 +822,8 @@ async def poll_research_jobs(
 async def research_from_source(
     notebook_id: str,
     source_id: str,
+    client: RetryingNotebookLMClient,
+    notebooklm_config: NotebookLMConfig,
     mode: str = "fast",
     task_id: Optional[str] = None,
     topic: Optional[str] = None,
@@ -797,7 +835,9 @@ async def research_from_source(
 ) -> ResearchResult:
 
     if not task_id:
-        task = await create_research_job(notebook_id, source_id, mode)
+        task = await create_research_job(
+            notebook_id, source_id, client=client, mode=mode
+        )
         task_id = task.task_id
         topic = task.topic
         summary = task.summary
@@ -827,6 +867,7 @@ async def research_from_source(
     res = None
     async for r in poll_research_jobs(
         task_gen(),
+        notebooklm_config,
         fallback_importer=fallback_importer,
         max_import_failures=max_import_failures,
     ):

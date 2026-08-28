@@ -15,25 +15,26 @@ logger = logging.getLogger(__name__)
 class Distribution(ABC):
     """Abstract base class for distribution mechanisms."""
 
+    name: Optional[str]
+
     def __init__(self, notifiers: Optional[List[Notifier]] = None):
         self.notifiers: List[Notifier] = notifiers or []
 
     @abstractmethod
     async def _distribute(
         self,
-        notebook_id: str,
-        podcast_dir: str,
+        working_dir: str,
     ) -> dict:
-        """Executes the specific distribution operation for a given notebook."""
+        """Executes the specific distribution operation for a given working directory."""
         ...
 
     async def distribute(
         self,
-        notebook_id: str,
-        podcast_dir: str,
+        working_dir: str,
+        metadata: Optional[dict] = None,
     ) -> dict:
         """Executes the distribution operation and runs attached notifiers concurrently."""
-        result = await self._distribute(notebook_id, podcast_dir=podcast_dir)
+        result = await self._distribute(working_dir=working_dir)
 
         if self.notifiers:
             logger.info(
@@ -41,9 +42,8 @@ class Distribution(ABC):
             )
             notifier_tasks = [
                 n.notify(
-                    notebook_id,
+                    metadata=metadata,
                     dist_result=result,
-                    podcast_dir=podcast_dir,
                 )
                 for n in self.notifiers
             ]
@@ -92,9 +92,9 @@ def build_distribution(
 
 async def execute_distribution(
     dist_input: DistributionConfig,
-    notebook_id: str,
-    podcast_dir: str,
+    working_dir: str,
+    metadata: Optional[dict] = None,
 ) -> dict:
-    """Executes a distribution for a given notebook."""
+    """Executes a distribution for a given working directory."""
     dist_obj = build_distribution(dist_input)
-    return await dist_obj.distribute(notebook_id, podcast_dir=podcast_dir)
+    return await dist_obj.distribute(working_dir=working_dir, metadata=metadata)

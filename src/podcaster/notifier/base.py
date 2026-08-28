@@ -10,11 +10,12 @@ logger = logging.getLogger(__name__)
 class Notifier(ABC):
     """Abstract base class for notification mechanisms."""
 
+    name: Optional[str]
+
     @abstractmethod
     async def notify(
         self,
-        notebook_id: str,
-        podcast_dir: str,
+        metadata: Optional[dict] = None,
         dist_result: Optional[dict] = None,
     ) -> dict:
         """Executes the notification operation."""

@@ -15,7 +15,7 @@ from google.cloud.speech_v2.types import cloud_speech
 
 from .config import GCPConfig, PodcastTranscriptionConfig
 from .models import PodcastGenArtifact, TaskStatus, TranscriptionTask
-from .utils import is_transient_network_exception
+from .utils.retry import is_transient_network_exception
 
 logger = logging.getLogger(__name__)
 

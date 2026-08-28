@@ -31,7 +31,7 @@ async def get_prompt(
 
     # Fetch AI generated summary (source guide)
     guide = await client.sources.get_guide(params.notebook_id, inputs.source_id)
-    topic_summary = guide.get("summary")
+    topic_summary = getattr(guide, "summary", None)
 
     if not topic_summary:
         raise RuntimeError(

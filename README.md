@@ -81,15 +81,50 @@ devenv shell --profile agents
 
 ## Configuration
 
-The tool reads from `podcaster.yaml` in the current directory. It uses a strict Pydantic schema for validation.
-See [podcaster.example.yaml](podcaster.example.yaml) as an example.
+Podcaster reads `podcaster.yaml` from the current directory and validates it with a
+strict schema. Unknown keys are rejected. See
+[podcaster.example.yaml](podcaster.example.yaml) for the full configuration shape.
+
+Configuration is resolved in this order:
+
+1. Parse and validate `podcaster.yaml`.
+2. Resolve `ref` values to their named preset.
+3. Fill only unset fields annotated with `env_var: true` from the process environment.
+
+An explicit value in YAML always wins over an environment value. Podcaster does not
+load a `.env` file itself.
+
+### Environment-backed configuration
+
+Environment names are derived from the configuration path by uppercasing it and
+replacing dots with underscores. The following fields support environment defaults:
+
+| Configuration field | Unscoped environment variable |
+| --- | --- |
+| `notebooklm.home` | `NOTEBOOKLM_HOME` |
+| `notebooklm.storage_state` | `NOTEBOOKLM_STORAGE_STATE` |
+| `notebooklm.profile` | `NOTEBOOKLM_PROFILE` |
+| `notifiers.<name>.plex.server_library_path` | `PLEX_SERVER_LIBRARY_PATH` |
+| `notifiers.<name>.plex.server_url` | `PLEX_SERVER_URL` |
+| `notifiers.<name>.plex.token` | `PLEX_TOKEN` |
+| `notifiers.<name>.discord.webhook_url` | `DISCORD_WEBHOOK_URL` |
+| `notifiers.<name>.discord.bot_token` | `DISCORD_BOT_TOKEN` |
+| `notifiers.<name>.discord.channel_id` | `DISCORD_CHANNEL_ID` |
+
+For named notifier presets, Podcaster prepends `NOTIFIERS_<NAME>_` to the
+unscoped variable and checks that scoped name first. `<NAME>` is the preset name
+uppercased, with non-alphanumeric runs replaced by one underscore. For example,
+the `daily news` preset checks
+`NOTIFIERS_DAILY_NEWS_DISCORD_WEBHOOK_URL` before
+`DISCORD_WEBHOOK_URL`.
+
+Inline notifier configurations have no preset name, so they use only the unscoped
+variables. Environment variables with an empty value are treated as unset.
 
 ### Environment Variables
 
-- `GOOGLE_API_KEY`: Your Google Gemini API key.
-- `PLEX_SERVER_URL`: URL to your Plex server (e.g., `http://localhost:32400`).
-- `PLEX_TOKEN`: Your Plex authentication token.
-- `NOTEBOOKLM_STORAGE_STATE`: Path to your NotebookLM `storage_state.json`.
+`GOOGLE_API_KEY` is consumed directly by the Google Gemini client. It is separate
+from Podcaster's YAML configuration and is required when generating covers.
 
 ## Usage
 
@@ -137,7 +172,7 @@ export PYTHONUNBUFFERED=1 # Recommended for real-time console output
 podcaster podcast create <notebook_id> main-article-with-author | \
 podcaster podcast poll | \
 podcaster podcast download | \
-podcaster tag-podcast --cover ./album_cover.png | \
+podcaster tag-podcast --preset default --cover ./album_cover.png | \
 podcaster transcription create | \
 podcaster transcription poll | \
 podcaster transcription download
@@ -205,7 +240,7 @@ podcaster distribute <notebook_id> --preset my-media-server [--flag "--dry-run"]
 Scrapes the main article text from a target URL using the configured agent.
 
 ```bash
-podcaster scrape <target_url> [--dry-run]
+podcaster scrape <target_url> --scraper <preset> [--dry-run]
 ```
 
 #### Edit a workflow state

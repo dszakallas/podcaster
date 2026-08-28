@@ -7,6 +7,26 @@ from pydantic import BaseModel, ConfigDict
 
 from podcaster.config import Ref, RefResolver
 
+
+def _app_config(**overrides):
+    from podcaster.config import AppConfig
+
+    config = {
+        "dbos": {},
+        "scrapers": {},
+        "agents": {},
+        "podcast_generators": {},
+        "podcast_transcribers": {},
+        "importers": {},
+        "podcast_tags": {},
+        "workflow": {"presets": {}},
+        "notifiers": {},
+        "distributions": {},
+        "gcp": {},
+    }
+    config.update(overrides)
+    return AppConfig.model_validate(config)
+
 # ---------------------------------------------------------------------------
 # Test config models (isolated from AppConfig)
 # ---------------------------------------------------------------------------
@@ -372,9 +392,9 @@ class TestRefCoercion:
 class TestRefExtraFields:
     def test_ref_with_extra_fields(self):
         """Ref can carry override fields validated against the target type."""
-        ref = Ref[ServiceConfig](
-            ref="base", host="override.local", port=9999
-        )  # pyright: ignore[reportCallIssue]
+        ref = Ref[ServiceConfig].model_validate(
+            {"ref": "base", "host": "override.local", "port": 9999}
+        )
         assert ref.ref == "base"
         # Extra fields accessible via __getattr__
         assert ref.host == "override.local"
@@ -397,9 +417,7 @@ class TestRefExtraFields:
         from pydantic import ValidationError
 
         with pytest.raises(ValidationError):
-            Ref[ServiceConfig](
-                ref="base", port="not-a-number"
-            )  # pyright: ignore[reportCallIssue]
+            Ref[ServiceConfig].model_validate({"ref": "base", "port": "not-a-number"})
 
 
 # ---------------------------------------------------------------------------
@@ -433,9 +451,9 @@ class TestIdempotency:
 class TestRefGetattr:
     def test_model_extra_takes_precedence(self):
         """Fields in model_extra are returned before target type defaults."""
-        ref = Ref[ServiceConfig](
-            ref="base", host="from-extra.local"
-        )  # pyright: ignore[reportCallIssue]
+        ref = Ref[ServiceConfig].model_validate(
+            {"ref": "base", "host": "from-extra.local"}
+        )
         assert ref.host == "from-extra.local"
 
     def test_ref_attribute_returns_none_for_target_field(self):
@@ -457,7 +475,6 @@ class TestRefGetattr:
 class TestNotifierDistributionNameResolution:
     def test_build_notifier_and_distribution_name_resolution(self):
         from podcaster.config import (
-            AppConfig,
             DistributionConfig,
             NotifierConfig,
             PlexNotifierConfig,
@@ -474,7 +491,7 @@ class TestNotifierDistributionNameResolution:
             notifiers=[Ref[NotifierConfig](ref="test-plex")],
         )
 
-        app_config = AppConfig(
+        app_config = _app_config(
             notifiers={"test-plex": plex_cfg},
             distributions={"test-dist": dist_cfg},
         )
@@ -482,6 +499,7 @@ class TestNotifierDistributionNameResolution:
 
         resolved_dist = app_config.distributions["test-dist"]
         resolved_notifier = resolved_dist.notifiers[0]
+        assert isinstance(resolved_notifier, NotifierConfig)
 
         notifier = build_notifier(resolved_notifier)
         assert notifier.name == "test-plex"
@@ -491,7 +509,7 @@ class TestNotifierDistributionNameResolution:
         assert len(dist.notifiers) == 1
         assert dist.notifiers[0].name == "test-plex"
 
-    def test_inline_notifier_and_distribution_config_support(self, monkeypatch):
+    def test_inline_notifier_and_distribution_config_support(self):
         from podcaster.config import (
             DiscordNotifierConfig,
             DistributionConfig,
@@ -509,17 +527,6 @@ class TestNotifierDistributionNameResolution:
             notifiers=[inline_notifier_cfg],
         )
 
-        dummy_app_config = type(
-            "DummyAppConfig",
-            (),
-            {
-                "notifiers": {},
-                "distributions": {},
-            },
-        )()
-
-        monkeypatch.setattr("podcaster.utils.load_config", lambda: dummy_app_config)
-
         notifier = build_notifier(inline_notifier_cfg)
         assert notifier.name is None
 
@@ -530,7 +537,6 @@ class TestNotifierDistributionNameResolution:
 
     def test_ref_name_and_ref_path_metadata_attached(self):
         from podcaster.config import (
-            AppConfig,
             DistributionConfig,
             NotifierConfig,
             PlexNotifierConfig,
@@ -547,7 +553,7 @@ class TestNotifierDistributionNameResolution:
             notifiers=[Ref[NotifierConfig](ref="my-plex")],
         )
 
-        app_config = AppConfig(
+        app_config = _app_config(
             notifiers={"my-plex": plex_cfg},
             distributions={"my-dist": dist_cfg},
         )
@@ -558,6 +564,7 @@ class TestNotifierDistributionNameResolution:
         assert getattr(resolved_dist_cfg, "_ref_path", None) == "distributions.my-dist"
 
         resolved_notifier_cfg = resolved_dist_cfg.notifiers[0]
+        assert isinstance(resolved_notifier_cfg, NotifierConfig)
         assert getattr(resolved_notifier_cfg, "_ref_name", None) == "my-plex"
         assert getattr(resolved_notifier_cfg, "_ref_path", None) == "notifiers.my-plex"
 

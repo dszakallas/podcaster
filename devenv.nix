@@ -83,7 +83,7 @@ in
   };
 
   enterShell = ''
-    export PATH="$DEVENV_ROOT/.venv/bin:$PATH"
+    export PATH="$DEVENV_STATE/venv/bin:$PATH"
   '';
 
   profiles = lib'.importRec1 ./devenv args;

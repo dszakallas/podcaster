@@ -15,6 +15,7 @@ downloads/
 
 # Tools/IDEs
 /.mcp.json
+/.codex
 /.copilot
 /.agents
 /.vscode

@@ -1,5 +1,7 @@
-# Local directory where generated podcasts and metadata are stored
-podcast_dir: "podcasts"
+# DBOS workflow persistence configuration
+dbos:
+  engine: "sqlite"
+  sqlite_path: "~/.podcaster/dbos.db"
 
 # Configured LLM/agent tools used for executing sub-tasks
 # The agent should have all necessary tools and skills installed to carry out
@@ -58,9 +60,9 @@ podcast_generators:
 podcast_tags:
   default:
     # The album artist tag applied to the audio files
-    album_artist: "Your Name"
+    album_artist: "John Doe"
     # The list of artists tags applied to the audio files
-    artists: ["Your Name"]
+    artists: ["NotebookLM"]
 
 # Configurations for the transcription of generated podcast audio
 podcast_transcribers:
@@ -73,50 +75,55 @@ podcast_transcribers:
 
 # Workflow configurations for managing deep dive podcast generation pipelines
 workflow:
-  # Reference name of the workflow preset
-  deep-dive-default:
-    # The workflow type (currently only "deep_dive_article" is supported)
-    type: "deep_dive_article"
-    # Reference to an importer configuration under 'importers'
-    importer:
-      ref: "default"
-    podcast_generator:
-      # Reference to a key under 'podcast_generators'
-      ref: "default"
-    # Web research & source enrichment options
-    enrich_web:
-      enable: true
-      retry_count: 0
-      spec:
-        # Mode of enrichment: "fast" or "deep"
-        mode: "fast"
-        # Reference to an importer or inline importer config for failed research imports
-        fallback_importer:
-          ref: "scraper"
-        # Optional maximum allowed import failures during research (default: null tolerates any failure count)
-        # max_import_failures: 2
-    # Podcast album cover art generation options
-    generate_cover:
-      enable: true
-      retry_count: 0
-      spec: {}
-    # Audio transcription & LRC subtitle generation options
-    transcribe:
-      enable: true
-      retry_count: 0
-      # Transcriber settings (refers to a key under 'podcast_transcribers' or specified inline)
-      podcast_transcriber:
-        # Reference to a key under 'podcast_transcribers'
+  # Working directory root, workfow files will be saved into a unique subdirectory keyed by the workflow id; defaults to the current directory.
+  workdir: "."
+  presets:
+    # Reference name of the workflow preset
+    deep-dive-default:
+      # The workflow type (currently only "deep_dive_article" is supported)
+      type: "deep_dive_article"
+      # Reference to an importer configuration under 'importers'
+      importer:
         ref: "default"
-    # ID3 tagging options
-    tagging:
-      enable: true
-      spec:
+      podcast_generator:
+        # Reference to a key under 'podcast_generators'
         ref: "default"
-    # Distribution targets for deploying completed podcasts. note: they run concurrently
-    distribute:
-      # Deploy using Rsync/Rclone target
-      - ref: gdrive-backup
+      # Web research & source enrichment options
+      enrich_web:
+        enable: true
+        retry_count: 0
+        spec:
+          # Mode of enrichment: "fast" or "deep"
+          mode: "fast"
+          # Reference to an importer or inline importer config for failed research imports
+          fallback_importer:
+            ref: "scraper"
+          # Optional maximum allowed import failures during research (default: null tolerates any failure count)
+          # max_import_failures: 2
+      # Podcast album cover art generation options
+      generate_cover:
+        enable: true
+        retry_count: 0
+        spec:
+          # Gemini model used for album cover image generation (default: gemini-3.1-flash-image)
+          model: "gemini-3.1-flash-image"
+      # Audio transcription & LRC subtitle generation options
+      transcribe:
+        enable: true
+        retry_count: 0
+        # Transcriber settings (refers to a key under 'podcast_transcribers' or specified inline)
+        podcast_transcriber:
+          # Reference to a key under 'podcast_transcribers'
+          ref: "default"
+      # ID3 tagging options
+      tagging:
+        enable: true
+        spec:
+          ref: "default"
+      # Distribution targets for deploying completed podcasts. note: they run concurrently
+      distribute:
+        # Deploy using Rsync/Rclone target
+        - ref: gdrive-backup
 
 # Importers definition
 importers:
@@ -130,7 +137,7 @@ importers:
       - ".*"
       - "!https?://.*wsj\\.com/.*"
       - "!https?://.*forbes\\.com/.*"
-      - "!https?://.*politico\\.eu/.*"
+      - "!https?://.*politico\\.(eu|com)/.*"
       - "!https?://.*nytimes\\.com/.*"
       - "!https?://.*hvg\\.hu/.*"
       - "!https?://.*msn\\.com/.*"
@@ -155,9 +162,11 @@ notifiers:
       # Base URL of the Plex server
       server_url: "http://localhost:32400"
       # Plex authentication token
+      # Sensitive field, better to use the PLEX_TOKEN or the NOTIFIERS_MY_PLEX_PLEX_TOKEN environment variable
       token: "your-plex-token"
   my-discord:
     discord:
+      # Sensitive field, better to use the DISCORD_WEBHOOK_URL or the NOTIFIERS_MY_DISCORD_DISCORD_WEBHOOK_URL environment variable
       webhook_url: "https://discord.com/api/webhooks/your-webhook-id/your-webhook-token"
 
 # Distribution target definitions (rsync, rclone)

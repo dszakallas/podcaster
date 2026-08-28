@@ -1,16 +1,49 @@
-"""Unit tests for pure utility functions in podcaster.utils."""
+"""Unit tests for Podcaster utility modules."""
 
-from datetime import datetime
+import io
+import logging
 
 import pytest
 
-from podcaster.utils import (
-    find_notebook_dir,
-    get_notebook_dir_name,
-    parse_duration_minutes,
-    resolve_duration,
-    sanitize,
-)
+from podcaster.utils.dbos import configure_dbos_logging
+from podcaster.utils.duration import parse_duration_minutes, resolve_duration
+from podcaster.utils.files import get_workflow_dir, sanitize
+from podcaster.utils.logging import StructuredFormatter
+
+
+def test_configure_dbos_logging_uses_application_formatter():
+    dbos_logger = logging.getLogger("dbos")
+    original_handlers = list(dbos_logger.handlers)
+    original_level = dbos_logger.level
+    original_propagate = dbos_logger.propagate
+    root_logger = logging.getLogger()
+    root_handler = logging.StreamHandler(io.StringIO())
+    root_handler.setFormatter(
+        StructuredFormatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+    )
+
+    try:
+        dbos_logger.addHandler(logging.NullHandler())
+        dbos_logger.propagate = False
+        dbos_logger.setLevel(logging.INFO)
+        root_logger.addHandler(root_handler)
+
+        configure_dbos_logging()
+        dbos_logger.info("routine lifecycle message")
+        dbos_logger.warning("database connection lost")
+
+        assert dbos_logger.handlers == []
+        assert dbos_logger.propagate is True
+        assert dbos_logger.level == logging.WARNING
+        log_output = root_handler.stream.getvalue()
+        assert " - dbos - WARNING - database connection lost" in log_output
+        assert "routine lifecycle message" not in log_output
+    finally:
+        root_logger.removeHandler(root_handler)
+        dbos_logger.handlers.clear()
+        dbos_logger.handlers.extend(original_handlers)
+        dbos_logger.setLevel(original_level)
+        dbos_logger.propagate = original_propagate
 
 # ---------------------------------------------------------------------------
 # sanitize
@@ -52,63 +85,15 @@ class TestSanitize:
 
 
 # ---------------------------------------------------------------------------
-# get_notebook_dir_name
+# get_workflow_dir
 # ---------------------------------------------------------------------------
 
 
-class TestGetNotebookDirName:
-    def test_without_date(self):
-        result = get_notebook_dir_name("My Podcast", "abc-123")
-        assert result == "My_Podcast [nlm_abc-123]"
-
-    def test_with_date(self):
-        dt = datetime(2024, 3, 15, 10, 30)
-        result = get_notebook_dir_name("My Podcast", "abc-123", created_at=dt)
-        assert result == "2024-03-15 - My_Podcast [nlm_abc-123]"
-
-    def test_special_chars_in_title(self):
-        result = get_notebook_dir_name("Hello/World!", "id1")
-        assert result == "Hello_World_ [nlm_id1]"
-
-    def test_empty_title(self):
-        result = get_notebook_dir_name("", "id1")
-        assert result == " [nlm_id1]"
-
-    def test_none_date_omits_prefix(self):
-        result = get_notebook_dir_name("Title", "id1", created_at=None)
-        assert not result.startswith("0000")
-        assert result == "Title [nlm_id1]"
-
-
-# ---------------------------------------------------------------------------
-# find_notebook_dir
-# ---------------------------------------------------------------------------
-
-
-class TestFindNotebookDir:
-    def test_finds_matching_dir(self, tmp_path):
-        (tmp_path / "2024-01-01 - Test [nlm_abc-123]").mkdir()
-        result = find_notebook_dir(str(tmp_path), "abc-123")
-        assert result == "2024-01-01 - Test [nlm_abc-123]"
-
-    def test_returns_none_when_not_found(self, tmp_path):
-        (tmp_path / "other_dir").mkdir()
-        assert find_notebook_dir(str(tmp_path), "nonexistent") is None
-
-    def test_returns_none_for_nonexistent_base(self):
-        assert find_notebook_dir("/nonexistent/path", "id") is None
-
-    def test_ignores_files_with_suffix(self, tmp_path):
-        # Create a file (not directory) with the suffix
-        (tmp_path / "Test [nlm_abc-123]").write_text("not a dir")
-        assert find_notebook_dir(str(tmp_path), "abc-123") is None
-
-    def test_multiple_matches_returns_first(self, tmp_path):
-        (tmp_path / "First [nlm_abc-123]").mkdir()
-        (tmp_path / "Second [nlm_abc-123]").mkdir()
-        result = find_notebook_dir(str(tmp_path), "abc-123")
-        assert result is not None
-        assert "[nlm_abc-123]" in result
+class TestGetWorkflowDir:
+    def test_creates_workflow_dir(self, tmp_path):
+        wf_dir = get_workflow_dir(tmp_path, "wf_123456")
+        assert wf_dir.exists()
+        assert wf_dir == tmp_path / "wf_123456"
 
 
 # ---------------------------------------------------------------------------

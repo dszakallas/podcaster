@@ -2,13 +2,18 @@
 
 import asyncio
 import re
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from podcaster.config import NotebookLMConfig
 from podcaster.research import (
     evaluate_importer_match,
     extract_drive_file_id,
+    import_source,
     normalize_source,
+    parse_summary_response,
+    strip_citations,
 )
 
 # ---------------------------------------------------------------------------
@@ -135,6 +140,34 @@ class TestNormalizeSource:
         assert result.startswith("file://")
 
 
+def test_import_source_uses_the_supplied_client() -> None:
+    async def run_test() -> None:
+        client = MagicMock()
+        importer = MagicMock()
+        with patch(
+            "podcaster.research.execute_importer",
+            new_callable=AsyncMock,
+            return_value={"source_id": "source-1"},
+        ) as execute_importer:
+            result = await import_source(
+                notebook_id="notebook-1",
+                source="https://example.com/article",
+                importer=importer,
+                client=client,
+            )
+
+        assert result == {"source_id": "source-1"}
+        execute_importer.assert_awaited_once_with(
+            importer,
+            client=client,
+            notebook_id="notebook-1",
+            source="https://example.com/article",
+            title=None,
+        )
+
+    asyncio.run(run_test())
+
+
 # ---------------------------------------------------------------------------
 # poll_research_jobs fallback_importer and max_import_failures
 # ---------------------------------------------------------------------------
@@ -180,7 +213,7 @@ class TestResearchFallbackAndImportFailures:
                 pass
 
         monkeypatch.setattr(
-            "podcaster.research.get_notebooklm_client", lambda: DummyClientCtx()
+            "podcaster.research.get_notebooklm_client", lambda _config: DummyClientCtx()
         )
 
         async def gen():
@@ -196,7 +229,7 @@ class TestResearchFallbackAndImportFailures:
         async def run_test():
             with pytest.raises(RuntimeError) as excinfo:
                 async for _ in poll_research_jobs(
-                    gen(), fallback_importer=None, max_import_failures=1
+                    gen(), NotebookLMConfig(), fallback_importer=None, max_import_failures=1
                 ):
                     pass
 
@@ -239,7 +272,7 @@ class TestResearchFallbackAndImportFailures:
                 pass
 
         monkeypatch.setattr(
-            "podcaster.research.get_notebooklm_client", lambda: DummyClientCtx()
+            "podcaster.research.get_notebooklm_client", lambda _config: DummyClientCtx()
         )
 
         async def gen():
@@ -255,7 +288,7 @@ class TestResearchFallbackAndImportFailures:
         async def run_test():
             results = []
             async for r in poll_research_jobs(
-                gen(), fallback_importer=None, max_import_failures=None
+                gen(), NotebookLMConfig(), fallback_importer=None, max_import_failures=None
             ):
                 results.append(r)
 
@@ -263,3 +296,80 @@ class TestResearchFallbackAndImportFailures:
             assert results[0].imported_count == 0
 
         asyncio.run(run_test())
+
+
+# ---------------------------------------------------------------------------
+# strip_citations
+# ---------------------------------------------------------------------------
+
+
+class TestStripCitations:
+    def test_inline_single_citation(self):
+        text = "This is a summary [1]."
+        assert strip_citations(text) == "This is a summary."
+
+    def test_inline_multiple_citations(self):
+        text = "This is a summary [1, 2] with events [3]."
+        assert strip_citations(text) == "This is a summary with events."
+
+    def test_inline_range_citation(self):
+        text = "Summary [1-3] text."
+        assert strip_citations(text) == "Summary text."
+
+    def test_inline_consecutive_citations(self):
+        text = "Summary [1][2]."
+        assert strip_citations(text) == "Summary."
+
+    def test_trailing_sources_block(self):
+        text = "Summary text.\n\nSources:\n[1] Source link"
+        assert strip_citations(text) == "Summary text."
+
+    def test_trailing_bracket_block(self):
+        text = "Summary text.\n\n[1] https://example.com"
+        assert strip_citations(text) == "Summary text."
+
+    def test_no_citations(self):
+        text = "Plain text summary."
+        assert strip_citations(text) == "Plain text summary."
+
+
+# ---------------------------------------------------------------------------
+# parse_summary_response
+# ---------------------------------------------------------------------------
+
+
+class TestParseSummaryResponse:
+    def test_clean_json(self):
+        resp = '{"summary": "A clean summary.", "suggested_duration": "20 minutes"}'
+        summary, duration = parse_summary_response(resp)
+        assert summary == "A clean summary."
+        assert duration == "20 minutes"
+
+    def test_json_with_inline_citations(self):
+        resp = '{"summary": "Summary with [1, 2] citations.", "suggested_duration": "15 minutes"}'
+        summary, duration = parse_summary_response(resp)
+        assert summary == "Summary with citations."
+        assert duration == "15 minutes"
+
+    def test_json_with_trailing_citations_and_code_fence(self):
+        resp = (
+            "```json\n"
+            '{"summary": "Summary text [1].", "suggested_duration": "25 minutes"}\n'
+            "```\n"
+            "[1] Source link {details}"
+        )
+        summary, duration = parse_summary_response(resp)
+        assert summary == "Summary text."
+        assert duration == "25 minutes"
+
+    def test_invalid_json_with_citation_in_structure(self):
+        resp = '{"summary": "Summary text" [1], "suggested_duration": "30 minutes"}'
+        summary, duration = parse_summary_response(resp)
+        assert summary == "Summary text"
+        assert duration == "30 minutes"
+
+    def test_plain_text_fallback(self):
+        resp = "This is a plain summary [1].\n\n[1] Reference"
+        summary, duration = parse_summary_response(resp)
+        assert summary == "This is a plain summary."
+        assert duration == ""

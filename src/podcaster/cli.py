@@ -5,13 +5,14 @@ import logging
 import os
 import re
 import sys
-from typing import Any, AsyncIterator, Optional, Type, TypeVar
+from typing import Any, AsyncIterator, Mapping, Optional, Type, TypeVar
 
 import click
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from . import cover, notebook, research, tagging, transcription
 from .audio_gen import core as audio_gen_core
+from .config import DEFAULT_COVER_MODEL, load_config
 from .models import (
     CoverTask,
     PodcastGenArtifact,
@@ -19,29 +20,16 @@ from .models import (
     ResearchTask,
     TranscriptionTask,
 )
-from .utils import load_config, resolve_notebook_dir_path, setup_logging
+from .utils.cli import async_command, verbose_option
+from .utils.dbos import (
+    assert_workflow_version,
+    ensure_dbos_initialized,
+    shutdown_dbos,
+    wait_for_workflow_result,
+)
+from .utils.notebooklm import get_notebooklm_client
 
 TModel = TypeVar("TModel", bound=BaseModel)
-
-
-def _verbose_callback(ctx, param, value):
-    root_ctx = ctx.find_root()
-    is_verbose = bool(value) or bool(root_ctx.meta.get("verbose"))
-    if is_verbose:
-        root_ctx.meta["verbose"] = True
-    setup_logging(verbose=is_verbose)
-    return value
-
-
-verbose_option = click.option(
-    "--verbose",
-    "-v",
-    is_flag=True,
-    expose_value=False,
-    is_eager=True,
-    help="Enable verbose logging",
-    callback=_verbose_callback,
-)
 
 
 @click.group()
@@ -51,20 +39,22 @@ def cli():
     pass
 
 
-async def stream_stdin():
+async def stream_stdin() -> AsyncIterator[Any]:
     """Helper to stream JSON objects from stdin."""
     loop = asyncio.get_event_loop()
+    line_number = 0
     while True:
         line = await loop.run_in_executor(None, sys.stdin.readline)
         if not line:
             break
+        line_number += 1
         line = line.strip()
         if not line:
             continue
         try:
             yield json.loads(line)
-        except json.JSONDecodeError:
-            continue
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid JSON on stdin line {line_number}") from e
 
 
 async def parse_input_stream(
@@ -79,56 +69,17 @@ async def parse_input_stream(
                     yield model_cls.model_validate_json(aj)
                 else:
                     yield json.loads(aj)
-            except Exception:
-                continue
+            except (json.JSONDecodeError, ValidationError) as e:
+                raise ValueError("Invalid --arg-json payload") from e
     else:
         async for item in stream_stdin():
             if model_cls:
                 try:
                     yield model_cls.model_validate(item)
-                except Exception:
-                    continue
+                except ValidationError as e:
+                    raise ValueError("Invalid JSON input from stdin") from e
             else:
                 yield item
-
-
-def async_command(stream: bool = False):
-    """Decorator to standardise asyncio execution, logging, JSON output, and error handling for Click commands."""
-
-    def decorator(fn):
-        @functools.wraps(fn)
-        def wrapper(*args, **kwargs):
-            async def runner():
-                try:
-                    res = await fn(*args, **kwargs)
-                    if stream and res is not None:
-                        async for item in res:
-                            if isinstance(item, BaseModel):
-                                click.echo(item.model_dump_json())
-                            elif isinstance(item, dict):
-                                click.echo(json.dumps(item))
-                            else:
-                                click.echo(json.dumps(item))
-                            sys.stdout.flush()
-                    elif res is not None:
-                        if isinstance(res, BaseModel):
-                            click.echo(res.model_dump_json())
-                        elif isinstance(res, dict) and res.get("error"):
-                            click.echo(json.dumps(res), err=True)
-                            sys.exit(1)
-                        else:
-                            click.echo(json.dumps(res))
-                        sys.stdout.flush()
-                except Exception as e:
-                    logging.getLogger(__name__).debug("Error occurred", exc_info=True)
-                    click.echo(json.dumps({"error": str(e)}), err=True)
-                    sys.exit(1)
-
-            asyncio.run(runner())
-
-        return wrapper
-
-    return decorator
 
 
 @cli.group(name="podcast")
@@ -187,6 +138,7 @@ async def podcast_create(
         length,
         format_args,
         generator_config=gen_cfg,
+        notebooklm_config=config.notebooklm,
         dry_run=dry_run,
     )
 
@@ -197,24 +149,29 @@ async def podcast_create(
 @async_command(stream=True)
 async def podcast_poll(arg_json):
     """Poll audio generation tasks. Accepts input from --arg-json or stdin."""
+    config = load_config()
     return audio_gen_core.poll_tasks(
-        parse_input_stream(arg_json, model_cls=PodcastGenTask)
+        parse_input_stream(arg_json, model_cls=PodcastGenTask), config.notebooklm
     )
 
 
 @podcast_group.command(name="download")
 @click.option(
-    "--podcast-dir", "-p", help="Output directory (default from config or podcasts)"
+    "--workdir",
+    "-W",
+    help="Output working directory (default: current directory)",
 )
 @click.option("--arg-json", multiple=True, help="JSON artifact object(s) to download.")
 @verbose_option
 @async_command(stream=True)
-async def podcast_download(podcast_dir, arg_json):
+async def podcast_download(workdir, arg_json):
     """Download podcast artifacts. Accepts input from --arg-json or stdin."""
     config = load_config()
-    podcast_dir = podcast_dir or config.podcast_dir
+    working_dir = workdir or "."
     return audio_gen_core.download_artifacts(
-        parse_input_stream(arg_json, model_cls=PodcastGenTask), podcast_dir
+        parse_input_stream(arg_json, model_cls=PodcastGenTask),
+        working_dir,
+        config.notebooklm,
     )
 
 
@@ -227,11 +184,18 @@ def cover_group():
 
 @cover_group.command(name="create")
 @click.argument("notebook_id")
+@click.option(
+    "--model",
+    default=DEFAULT_COVER_MODEL,
+    help="Model to use for cover generation.",
+)
 @verbose_option
 @async_command()
-async def cover_create(notebook_id):
+async def cover_create(notebook_id, model):
     """Submit cover generation task. Outputs task JSON."""
-    return await cover.create_cover_job(notebook_id)
+    config = load_config()
+    async with get_notebooklm_client(config.notebooklm) as client:
+        return await cover.create_cover_job(notebook_id, client, model=model)
 
 
 @cover_group.command(name="poll")
@@ -245,17 +209,18 @@ async def cover_poll(arg_json):
 
 @cover_group.command(name="download")
 @click.option(
-    "--podcast-dir", "-p", help="Output directory (default from config or podcasts)"
+    "--workdir",
+    "-W",
+    help="Output working directory (default: current directory)",
 )
 @click.option("--arg-json", multiple=True, help="JSON artifact object(s) to download.")
 @verbose_option
 @async_command(stream=True)
-async def cover_download(podcast_dir, arg_json):
+async def cover_download(workdir, arg_json):
     """Download cover generation results. Accepts input from --arg-json or stdin."""
-    config = load_config()
-    podcast_dir = podcast_dir or config.podcast_dir
+    working_dir = workdir or "."
     return cover.download_cover_jobs(
-        parse_input_stream(arg_json, model_cls=CoverTask), podcast_dir
+        parse_input_stream(arg_json, model_cls=CoverTask), working_dir
     )
 
 
@@ -320,39 +285,42 @@ async def transcription_download(arg_json):
 @click.option("--album", help="Album name for metadata tagging")
 @click.option("--date", help="Recording date for metadata tagging")
 @click.option("--arg-json", multiple=True, help="JSON artifact object(s) to tag.")
+@click.option("--preset", required=True, help="Podcast tag preset to apply")
 @verbose_option
 @async_command(stream=True)
-async def tag_podcast(cover, offset, album, date, arg_json):
+async def tag_podcast(cover, offset, album, date, arg_json, preset):
     """Tag podcast artifacts with metadata. Accepts input from --arg-json or stdin."""
+    config = load_config()
+    tags_config = config.podcast_tags.get(preset)
+    if not tags_config:
+        raise ValueError(f"Podcast tag preset '{preset}' not found in configuration.")
     return tagging.tag_artifacts(
         parse_input_stream(arg_json, model_cls=PodcastGenArtifact),
         cover,
         offset,
         album=album,
         created_at=date,
+        tags_config=tags_config,
     )
 
 
 @cli.command(name="list-podcasts")
 @click.option(
-    "--podcast-dir", "-p", help="Base directory for storage (default from config)"
+    "--workdir",
+    "-W",
+    default=".",
+    help="Directory to search (default: current directory)",
 )
 @verbose_option
-def list_podcasts(podcast_dir):
+def list_podcasts(workdir):
     """List locally available podcasts and their notebook IDs."""
-    config = load_config()
-    if not podcast_dir:
-        podcast_dir = config.podcast_dir
-
-    if not os.path.exists(podcast_dir):
-        click.echo(
-            json.dumps({"error": f"Directory not found: {podcast_dir}"}), err=True
-        )
+    if not os.path.exists(workdir):
+        click.echo(json.dumps({"error": f"Directory not found: {workdir}"}), err=True)
         sys.exit(1)
 
     try:
-        for item in os.listdir(podcast_dir):
-            item_path = os.path.join(podcast_dir, item)
+        for item in os.listdir(workdir):
+            item_path = os.path.join(workdir, item)
             if os.path.isdir(item_path):
                 # Pattern matches "[nlm_...]" at the end of the folder name
                 match = re.search(r"\[nlm_([a-zA-Z0-9-]+)\]$", item)
@@ -391,12 +359,14 @@ async def import_web(notebook_id, url, importer, title):
     importer_cfg = config.importers.get(importer)
     if not importer_cfg:
         raise ValueError(f"Importer '{importer}' not found in configuration.")
-    return await research.execute_importer(
-        importer=importer_cfg,
-        notebook_id=notebook_id,
-        source=url,
-        title=title,
-    )
+    async with get_notebooklm_client(config.notebooklm) as client:
+        return await research.execute_importer(
+            importer=importer_cfg,
+            client=client,
+            notebook_id=notebook_id,
+            source=url,
+            title=title,
+        )
 
 
 @cli.command(name="import-drive")
@@ -422,16 +392,19 @@ async def import_drive(notebook_id, url_or_id, title, importer):
     if not importer_cfg:
         raise ValueError(f"Importer '{importer}' not found in configuration.")
 
-    return await research.execute_importer(
-        importer=importer_cfg,
-        notebook_id=notebook_id,
-        source=url,
-        title=title,
-    )
+    async with get_notebooklm_client(config.notebooklm) as client:
+        return await research.execute_importer(
+            importer=importer_cfg,
+            client=client,
+            notebook_id=notebook_id,
+            source=url,
+            title=title,
+        )
 
 
 @cli.command(name="scrape")
 @click.argument("target")
+@click.option("--scraper", "scraper_name", required=True, help="Scraper preset to use")
 @click.option(
     "--dry-run",
     is_flag=True,
@@ -439,10 +412,12 @@ async def import_drive(notebook_id, url_or_id, title, importer):
 )
 @verbose_option
 @async_command()
-async def scrape(target, dry_run):
+async def scrape(target, scraper_name, dry_run):
     """Scrape a target URL and output the result with metadata on a single NDJSON line."""
     config = load_config()
-    scraper_cfg = config.scrapers.get("default")
+    scraper_cfg = config.scrapers.get(scraper_name)
+    if not scraper_cfg:
+        raise ValueError(f"Scraper '{scraper_name}' not found in configuration.")
     return await research.scrape_source(
         target, dry_run=dry_run, scraper_config=scraper_cfg
     )
@@ -468,7 +443,11 @@ def research_group():
 @async_command()
 async def research_create(notebook_id, source_id, mode):
     """Enrich a notebook with research based on a source guide and summary. Outputs task JSON."""
-    return await research.create_research_job(notebook_id, source_id, mode)
+    config = load_config()
+    async with get_notebooklm_client(config.notebooklm) as client:
+        return await research.create_research_job(
+            notebook_id, source_id, client=client, mode=mode
+        )
 
 
 @research_group.command(name="poll")
@@ -497,23 +476,23 @@ async def research_poll(arg_json, fallback_importer, max_import_failures):
             )
     return research.poll_research_jobs(
         parse_input_stream(arg_json, model_cls=ResearchTask),
+        config.notebooklm,
         fallback_importer=fallback_cfg,
         max_import_failures=max_import_failures,
     )
 
 
 @cli.command(name="distribute")
-@click.argument("notebook_id")
+@click.option(
+    "--workdir",
+    "-W",
+    help="Working directory containing podcast files to distribute",
+)
 @click.option(
     "--preset",
     default="default",
     show_default=True,
     help="Named distribution preset from config",
-)
-@click.option(
-    "--podcast-dir",
-    "-p",
-    help="Base directory where podcasts are stored (default from config or out)",
 )
 @click.option(
     "--flag",
@@ -524,16 +503,15 @@ async def research_poll(arg_json, fallback_importer, max_import_failures):
 @verbose_option
 @async_command()
 async def distribute(
-    notebook_id,
+    workdir,
     preset,
-    podcast_dir,
     flag,
 ):
-    """Distribute a notebook's podcasts using a named distribution preset."""
+    """Distribute podcasts from working directory using a named distribution preset."""
     from .distribution import build_distribution
 
     config = load_config()
-    podcast_dir = podcast_dir or config.podcast_dir
+    working_dir = workdir or "."
 
     if preset not in config.distributions:
         raise ValueError(f"Distribution preset '{preset}' not found in configuration.")
@@ -547,15 +525,12 @@ async def distribute(
     ):
         dist_any.flags.extend(flag)
 
-    return await dist_obj.distribute(notebook_id, podcast_dir=podcast_dir)
+    return await dist_obj.distribute(working_dir=working_dir)
 
 
 @cli.command(name="init-podcast-notebook")
 @click.option("--title", help="Title of the new notebook")
-@click.option("--notebook-id", help="ID of an existing notebook to initialize locally")
-@click.option(
-    "--podcast-dir", help="Root podcast directory (default from config or podcasts)"
-)
+@click.option("--notebook-id", help="ID of an existing notebook to fetch")
 @click.option("--from-source", help="Source file or URL to upload as the first source")
 @click.option(
     "--importer",
@@ -564,10 +539,9 @@ async def distribute(
 )
 @verbose_option
 @async_command()
-async def init_podcast_notebook(title, notebook_id, podcast_dir, from_source, importer):
-    """Create a new notebook or initialize an existing one locally."""
+async def init_podcast_notebook(title, notebook_id, from_source, importer):
+    """Create a new notebook or fetch an existing one."""
     config = load_config()
-    podcast_dir = podcast_dir or config.podcast_dir
     importer_cfg = config.importers.get(importer)
     if not importer_cfg:
         raise ValueError(f"Importer '{importer}' not found in configuration.")
@@ -578,13 +552,14 @@ async def init_podcast_notebook(title, notebook_id, podcast_dir, from_source, im
             "Either --title or --notebook-id must be provided when not initializing from source."
         )
 
-    return await notebook.init_notebook(
-        podcast_dir=podcast_dir,
-        importer=importer_cfg,
-        title=title,
-        notebook_id=notebook_id,
-        from_source=from_source,
-    )
+    async with get_notebooklm_client(config.notebooklm) as client:
+        return await notebook.init_notebook(
+            importer=importer_cfg,
+            client=client,
+            title=title,
+            notebook_id=notebook_id,
+            from_source=from_source,
+        )
 
 
 @click.group()
@@ -594,144 +569,198 @@ def workflow():
     pass
 
 
-@workflow.command(name="run")
-@click.argument("preset")
-@click.argument("source_file", type=click.Path(exists=False), required=True)
-@click.option(
-    "--title",
-    help="Title of the podcast / notebook. If not provided, it will be derived.",
-)
-@click.option(
-    "--length",
-    type=click.Choice(["short", "default", "long", "auto"]),
-    help="Target length (default from config)",
-)
-@click.option(
-    "--language",
-    "-l",
-    multiple=True,
-    help="Target language (repeatable, default from config)",
-)
-@click.option(
-    "--enrich-web/--no-enrich-web",
-    default=None,
-    help="Enrich notebook with web research (default: True)",
-)
-@click.option(
-    "--generate-cover/--no-generate-cover",
-    default=None,
-    help="Generate AI album cover (default: True)",
-)
-@click.option(
-    "--transcribe/--no-transcribe",
-    default=None,
-    help="Transcribe podcast (default: False)",
-)
-@click.option(
-    "--podcast-dir", "-p", help="Base directory for storage (default from config)"
-)
-@verbose_option
-@async_command()
-async def run_workflow(
-    preset,
-    source_file,
-    title,
-    length,
-    language,
-    enrich_web,
-    generate_cover,
-    transcribe,
-    podcast_dir,
-):
+class DynamicWorkflowRunGroup(click.Group):
+    """Dynamic Click group for running workflow presets defined in config."""
+
+    def list_commands(self, ctx: click.Context) -> list[str]:
+        try:
+            config = load_config()
+            return sorted(config.workflow.presets.root.keys())
+        except Exception:
+            return []
+
+    def get_command(self, ctx: click.Context, cmd_name: str) -> Optional[click.Command]:
+        try:
+            config = load_config()
+        except Exception:
+            return None
+
+        if cmd_name not in config.workflow.presets.root:
+            return None
+
+        wf_item = config.workflow.presets.root[cmd_name]
+        from .workflows import get_workflow_plugin
+
+        workflow_type = wf_item.model_dump().get("type")
+        if not isinstance(workflow_type, str):
+            raise ValueError(
+                f"Workflow preset '{cmd_name}' does not declare a string 'type'."
+            )
+
+        plugin = get_workflow_plugin(workflow_type)
+        if plugin is None:
+            raise ValueError(
+                f"Unknown workflow type '{workflow_type}' for preset '{cmd_name}'."
+            )
+
+        command = plugin.command_factory(cmd_name, config, wf_item)
+        if command.callback is None:
+            raise ValueError(
+                f"Workflow plugin '{workflow_type}' must provide a command callback."
+            )
+
+        callback = command.callback
+
+        @functools.wraps(callback)
+        def initialize_dbos_then_run(*args, **kwargs):
+            ensure_dbos_initialized(config.dbos)
+            return callback(*args, **kwargs)
+
+        command.callback = initialize_dbos_then_run
+        return command
+
+
+@workflow.group(name="run", cls=DynamicWorkflowRunGroup)
+def workflow_run():
     """Run a named workflow preset from config."""
-    if not source_file:
-        raise ValueError("Must provide source_file when starting a new workflow run.")
-
-    config = load_config()
-    podcast_dir = podcast_dir or config.podcast_dir
-
-    wf_config = config.workflow.root.get(preset)
-    if not wf_config:
-        raise ValueError(f"Workflow preset '{preset}' not found in config.")
-
-    from .workflows.deep_dive_article import workflow as dd_wf
-
-    return await dd_wf.run(
-        wf_config=wf_config,
-        preset_name=preset,
-        title=title,
-        source_file=source_file,
-        notebook_id=None,
-        length=length,
-        languages=[lang.lower() for lang in language] if language else None,
-        enrich_web=enrich_web,
-        generate_cover=generate_cover,
-        transcribe=transcribe,
-        podcast_dir=podcast_dir,
-        resume=False,
-        gcp_config=config.gcp,
-    )
+    pass
 
 
 @workflow.command(name="resume")
-@click.argument("notebook_id")
+@click.argument("workflow_id")
 @click.option(
-    "--podcast-dir", "-p", help="Base directory for storage (default from config)"
+    "--force",
+    is_flag=True,
+    help="Fork an incompatible workflow under the current DBOS application version.",
 )
 @verbose_option
 @async_command()
-async def resume_workflow(notebook_id, podcast_dir):
-    """Resume a failed or interrupted workflow run from the state file."""
-    config = load_config()
-    podcast_dir = podcast_dir or config.podcast_dir
-    from .workflows.deep_dive_article import workflow as dd_wf
-    from .workflows.deep_dive_article.state import WorkflowState
+async def resume_workflow(workflow_id, force):
+    """Resume a failed or interrupted workflow run in DBOS."""
+    import dbos
 
-    notebook_dir_path = resolve_notebook_dir_path(notebook_id, podcast_dir)
-    state = WorkflowState.load(notebook_dir_path)
-    if not state:
-        raise ValueError(
-            f"No state.json found for notebook ID {notebook_id} in {notebook_dir_path}"
+    from .workflows import load_workflow_definitions
+
+    config = load_config()
+    load_workflow_definitions()
+    ensure_dbos_initialized(config.dbos)
+
+    try:
+        workflow_status = await dbos.DBOS.get_workflow_status_async(workflow_id)
+        if workflow_status is None:
+            raise ValueError(f"Workflow '{workflow_id}' was not found.")
+
+        logger = logging.getLogger(__name__)
+        current_version = dbos.DBOS.application_version
+        if workflow_status.app_version != current_version:
+            if not force:
+                assert_workflow_version(
+                    workflow_id,
+                    workflow_status.app_version,
+                    current_version,
+                )
+
+            steps = await dbos.DBOS.list_workflow_steps_async(
+                workflow_id, load_output=False
+            )
+            start_step = max((step["function_id"] for step in steps), default=0) + 1
+            handle = await dbos.DBOS.fork_workflow_async(
+                workflow_id,
+                start_step,
+                application_version=current_version,
+            )
+            logger.warning(
+                "Forked incompatible workflow %s as %s from step %s",
+                workflow_id,
+                handle.workflow_id,
+                start_step,
+            )
+            return await wait_for_workflow_result(handle.workflow_id)
+
+        logger.info("Resuming DBOS workflow: %s", workflow_id)
+        await dbos.DBOS.resume_workflow_async(workflow_id)
+        return await wait_for_workflow_result(workflow_id)
+    finally:
+        shutdown_dbos()
+
+
+@workflow.command(name="status")
+@click.argument("workflow_id")
+@verbose_option
+def status_workflow(workflow_id):
+    """Get status and step breakdown for a DBOS workflow run."""
+    import dbos
+
+    config = load_config()
+    ensure_dbos_initialized(config.dbos)
+
+    wf_status = dbos.DBOS.get_workflow_status(workflow_id)
+    if not wf_status:
+        click.echo(f"Workflow run '{workflow_id}' not found.", err=True)
+        sys.exit(1)
+
+    steps = dbos.DBOS.list_workflow_steps(workflow_id)
+
+    def format_step(step: Mapping[str, Any]) -> dict[str, Any]:
+        error = step.get("error")
+        completed_at = step.get("completed_at_epoch_ms")
+        started_at = step.get("started_at_epoch_ms")
+
+        if error is not None:
+            status = "failed"
+        elif completed_at is not None:
+            status = "completed"
+        elif started_at is not None:
+            status = "running"
+        else:
+            status = "pending"
+
+        return {
+            "step_id": step.get("function_id"),
+            "step_name": step.get("function_name", "unknown"),
+            "status": status,
+            "error": str(error) if error is not None else None,
+            "started_at_epoch_ms": started_at,
+            "completed_at_epoch_ms": completed_at,
+            "child_workflow_id": step.get("child_workflow_id"),
+        }
+
+    res = {
+        "workflow_id": wf_status.workflow_id,
+        "name": wf_status.name,
+        "status": str(wf_status.status),
+        "created_at": str(wf_status.created_at),
+        "updated_at": str(wf_status.updated_at),
+        "steps": [format_step(step) for step in (steps or [])],
+    }
+    if wf_status.error:
+        res["error"] = str(wf_status.error)
+
+    click.echo(json.dumps(res, indent=2))
+
+
+@workflow.command(name="list")
+@verbose_option
+def list_workflows():
+    """List recent DBOS workflow executions."""
+    import dbos
+
+    config = load_config()
+    ensure_dbos_initialized(config.dbos)
+
+    workflows = dbos.DBOS.list_workflows()
+    runs = []
+    for wf in workflows:
+        runs.append(
+            {
+                "workflow_id": wf.workflow_id,
+                "name": wf.name,
+                "status": str(wf.status),
+                "created_at": str(wf.created_at),
+            }
         )
 
-    wf_config = config.workflow.root.get(state.preset)
-    if not wf_config:
-        raise ValueError(f"Workflow preset '{state.preset}' not found in config.")
-
-    return await dd_wf.run(
-        wf_config=wf_config,
-        preset_name=state.preset,
-        notebook_id=notebook_id,
-        podcast_dir=str(notebook_dir_path.parent),
-        resume=True,
-        gcp_config=config.gcp,
-    )
-
-
-@workflow.command(name="edit")
-@click.argument("notebook_id")
-@click.option(
-    "--podcast-dir", "-p", help="Base directory for storage (default from config)"
-)
-@verbose_option
-def workflow_edit(notebook_id, podcast_dir):
-    """Open the workflow state file in EDITOR for editing."""
-    config = load_config()
-    podcast_dir = podcast_dir or config.podcast_dir
-    try:
-        notebook_dir_path = resolve_notebook_dir_path(notebook_id, podcast_dir)
-        state_file = notebook_dir_path / "state.json"
-        if not state_file.exists():
-            raise ValueError(
-                f"No state.json found for notebook ID {notebook_id} in {state_file.parent}"
-            )
-
-        editor = os.environ.get("EDITOR")
-        click.edit(filename=str(state_file), editor=editor)
-    except Exception as e:
-        logging.getLogger(__name__).debug("Error occurred", exc_info=True)
-        click.echo(json.dumps({"error": str(e)}), err=True)
-        sys.exit(1)
+    click.echo(json.dumps(runs, indent=2))
 
 
 cli.add_command(workflow)

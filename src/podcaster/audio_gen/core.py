@@ -7,20 +7,14 @@ import time
 from pathlib import Path
 from typing import Any, AsyncGenerator, AsyncIterable, Optional, Union
 
-from notebooklm.exceptions import NotebookNotFoundError
-from notebooklm.rpc import AudioLength
+from notebooklm.rpc.types import AudioLength
 
-from ..config import PodcastGenerationConfig
+from ..config import NotebookLMConfig, PodcastGenerationConfig
 from ..models import PodcastGenArtifact, PodcastGenTask, TaskStatus
-from ..utils import (
-    RetryingNotebookLMClient,
-    get_notebooklm_client,
-    get_or_create_notebook_dir,
-    is_transient_network_exception,
-    parse_duration_minutes,
-    resolve_duration,
-    sanitize,
-)
+from ..utils.duration import parse_duration_minutes, resolve_duration
+from ..utils.files import sanitize
+from ..utils.notebooklm import RetryingNotebookLMClient, get_notebooklm_client
+from ..utils.retry import is_transient_network_exception
 from .params import AudioGenParams
 
 logger = logging.getLogger(__name__)
@@ -74,6 +68,7 @@ async def create_podcast_audio_jobs(
     length_str: Optional[str],
     format_args: dict[str, Any],
     generator_config: PodcastGenerationConfig,
+    notebooklm_config: NotebookLMConfig,
     dry_run: bool = False,
 ) -> AsyncGenerator[PodcastGenTask, None]:
     if not languages:
@@ -89,7 +84,7 @@ async def create_podcast_audio_jobs(
     plugin = load_plugin(type_name)
     inputs = plugin.Inputs.model_validate(format_args)
 
-    async with get_notebooklm_client() as client:
+    async with get_notebooklm_client(notebooklm_config) as client:
         critical_path = Path(__file__).parent / "data" / "critical.md"
         critical_content = critical_path.read_text()
         params = AudioGenParams(notebook_id=notebook_id, length=length_str)
@@ -102,7 +97,7 @@ async def create_podcast_audio_jobs(
         minutes = parse_duration_minutes(length_str) or DEFAULT_AUDIO_MINUTES
         eta = max(480.0, minutes * 30.0)
 
-        for lang_code in languages:
+        async def create_for_language(lang_code: str) -> PodcastGenTask:
             audio_length = duration_to_audio_length(length_str)
             if lang_code not in LANGUAGES_SUPPORTING_LENGTH:
                 audio_length = min(audio_length, AudioLength.DEFAULT)
@@ -116,7 +111,7 @@ async def create_podcast_audio_jobs(
                 )
                 if status.status == TaskStatus.FAILED or not status.task_id:
                     raise RuntimeError(status.error or "No task ID returned")
-                yield PodcastGenTask(
+                return PodcastGenTask(
                     notebook_id=notebook_id,
                     task_id=status.task_id,
                     eta=eta,
@@ -134,7 +129,7 @@ async def create_podcast_audio_jobs(
                 logger.error(
                     f"[{lang_code}] Audio generation initialization failed: {e}"
                 )
-                yield PodcastGenTask(
+                return PodcastGenTask(
                     notebook_id=notebook_id,
                     task_id="",
                     status=TaskStatus.FAILED,
@@ -148,6 +143,12 @@ async def create_podcast_audio_jobs(
                         }
                     },
                 )
+
+        tasks = await asyncio.gather(
+            *(create_for_language(lang_code) for lang_code in languages)
+        )
+        for task in tasks:
+            yield task
 
 
 def _poll_interval(t: float, target: float) -> float:
@@ -266,8 +267,9 @@ async def _poll_single_task(
 
 async def poll_tasks(
     tasks: AsyncIterable[PodcastGenTask],
+    notebooklm_config: NotebookLMConfig,
 ) -> AsyncGenerator[PodcastGenTask, None]:
-    async with get_notebooklm_client() as client:
+    async with get_notebooklm_client(notebooklm_config) as client:
         pending = set()
 
         async def wrap_poll(t_item: PodcastGenTask):
@@ -315,11 +317,12 @@ async def poll_tasks(
 
 async def download_artifacts(
     artifacts: AsyncIterable[Union[PodcastGenTask, PodcastGenArtifact]],
-    podcast_dir: str,
+    working_dir: str,
+    notebooklm_config: NotebookLMConfig,
 ) -> AsyncGenerator[PodcastGenArtifact, None]:
-    os.makedirs(podcast_dir, exist_ok=True)
+    os.makedirs(working_dir, exist_ok=True)
 
-    async with get_notebooklm_client() as client:
+    async with get_notebooklm_client(notebooklm_config) as client:
         async for raw_art in artifacts:
             if isinstance(raw_art, PodcastGenArtifact):
                 art_item = raw_art
@@ -337,26 +340,12 @@ async def download_artifacts(
             artifact_id = art_item.artifact_id
             title = art_item.title
 
-            # Fetch notebook for directory name
-            try:
-                notebook = await client.notebooks.get(notebook_id)
-                album = notebook.title if notebook else "NotebookLM Podcast"
-            except NotebookNotFoundError:
-                notebook = None
-                album = "NotebookLM Podcast"
-
-            # Organize by notebook directory
-            notebook_dir = get_or_create_notebook_dir(
-                podcast_dir,
-                notebook_id,
-                album,
-                notebook.created_at if notebook else None,
-            )
+            os.makedirs(working_dir, exist_ok=True)
 
             # Filename based on title suffixed with id
             safe_title = sanitize(title)
             filename = f"{safe_title} [{artifact_id}].m4a"
-            out_path = os.path.join(notebook_dir, filename)
+            out_path = os.path.join(working_dir, filename)
 
             try:
                 logger.debug(f"Downloading {artifact_id} to {out_path}...")
