@@ -255,6 +255,7 @@ async def create_transcription_jobs(
                     await delete_from_gcs(gcs_uri)
                 except Exception:
                     pass
+            raise
 
     executor.shutdown()
 

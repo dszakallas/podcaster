@@ -29,6 +29,7 @@ from podcaster.utils.duration import resolve_duration
 from podcaster.utils.files import get_workflow_dir
 from podcaster.utils.logging import log_task
 from podcaster.utils.notebooklm import get_notebooklm_client
+from podcaster.utils.retry import is_transient_network_exception
 
 from .config import DeepDiveArticleConfig
 
@@ -275,18 +276,20 @@ async def transcribe_audio_artifact_step(
             raise RuntimeError("Transcription did not produce a result")
         except Exception as exc:
             last_error = exc
+            if not is_transient_network_exception(exc):
+                raise
             if attempt == retry_count:
                 break
             logger.warning(
-                "Transcription failed; retrying (%s/%s): %s",
+                "Transient transcription failure; retrying (%s/%s): %s",
                 attempt + 1,
-                retry_count,
+                retry_count + 1,
                 exc,
             )
             await asyncio.sleep(2 ** (attempt + 1))
 
     raise RuntimeError(
-        f"Transcription failed after {retry_count + 1} attempts"
+        f"Transcription failed after {retry_count + 1} attempts: {last_error}"
     ) from last_error
 
 

@@ -31,6 +31,7 @@ from podcaster.workflows.deep_dive_article.workflow import (
     deep_dive_article_workflow,
     generate_cover_step,
     process_single_audio_task_step,
+    transcribe_audio_artifact_step,
 )
 
 
@@ -150,8 +151,12 @@ def test_process_single_audio_task_step_fails_after_transcription_retries(
                     filename="test.m4a",
                 )
 
+        attempts = 0
+
         async def failing_create_jobs(*args, **kwargs):
-            raise RuntimeError("transcription service unavailable")
+            nonlocal attempts
+            attempts += 1
+            raise ConnectionError("transcription service unavailable")
             yield
 
         with (
@@ -172,7 +177,10 @@ def test_process_single_audio_task_step_fails_after_transcription_retries(
                 new_callable=AsyncMock,
             ),
         ):
-            with pytest.raises(RuntimeError, match="Transcription failed after 2 attempts"):
+            with pytest.raises(
+                RuntimeError,
+                match="Transcription failed after 2 attempts: transcription service unavailable",
+            ):
                 await process_single_audio_task_step(
                     notebook_id="test-nb",
                     task_info=task_info,
@@ -186,6 +194,42 @@ def test_process_single_audio_task_step_fails_after_transcription_retries(
                     gcp_config=GCPConfig(),
                     notebooklm_config=NotebookLMConfig(),
                 )
+
+        assert attempts == 2
+
+    asyncio.run(_test())
+
+
+def test_transcription_step_does_not_retry_permanent_failure(dbos_session):
+    async def _test():
+        artifact = PodcastGenArtifact(
+            notebook_id="test-nb",
+            artifact_id="task-1",
+            title="Test",
+            path="test.m4a",
+            filename="test.m4a",
+        )
+        attempts = 0
+
+        async def failing_create_jobs(*args, **kwargs):
+            nonlocal attempts
+            attempts += 1
+            raise ValueError("invalid transcription request")
+            yield
+
+        with patch(
+            "podcaster.workflows.deep_dive_article.workflow.transcription.create_transcription_jobs",
+            side_effect=failing_create_jobs,
+        ):
+            with pytest.raises(ValueError, match="invalid transcription request"):
+                await transcribe_audio_artifact_step(
+                    artifact,
+                    retry_count=2,
+                    transcription_config=PodcastTranscriptionConfig(),
+                    gcp_config=GCPConfig(),
+                )
+
+        assert attempts == 1
 
     asyncio.run(_test())
 
