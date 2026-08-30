@@ -191,7 +191,7 @@ async def test_workflow_run_normalizes_languages(tmp_path, dbos_session):
             workdir=str(tmp_path),
             workflow_id="wf_test_norm",
             title="Test Title",
-            source_file="test.pdf",
+            source_url="test.pdf",
             notebook_id=None,
             length="default",
             languages=["EN", "Es-ES"],

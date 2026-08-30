@@ -31,6 +31,7 @@ from podcaster.workflows.deep_dive_article.workflow import (
     deep_dive_article_workflow,
     generate_cover_step,
     process_single_audio_task_step,
+    tag_audio_artifact_step,
     transcribe_audio_artifact_step,
 )
 
@@ -108,6 +109,8 @@ def test_process_single_audio_task_step_gcp_config_passed(dbos_session):
 
             await process_single_audio_task_step(
                 notebook_id="test-nb",
+                notebook_title="Test notebook",
+                notebook_created_at="2026-08-24T12:00:00Z",
                 task_info=task_info,
                 cover_image_path=None,
                 working_dir="podcasts/wf_test123",
@@ -122,6 +125,40 @@ def test_process_single_audio_task_step_gcp_config_passed(dbos_session):
 
             mock_create_jobs.assert_called_once()
             assert mock_create_jobs.call_args.kwargs["gcp_config"] == custom_gcp
+
+    asyncio.run(_test())
+
+
+def test_tag_audio_artifact_step_uses_notebook_metadata(dbos_session):
+    async def _test():
+        artifact = PodcastGenArtifact(
+            notebook_id="test-nb",
+            artifact_id="artifact-1",
+            title="Episode title",
+            path="episode.m4a",
+            filename="episode.m4a",
+        )
+        captured: dict[str, object] = {}
+
+        async def mock_tag(artifacts, **kwargs):
+            captured.update(kwargs)
+            async for item in artifacts:
+                yield item
+
+        with patch(
+            "podcaster.workflows.deep_dive_article.workflow.tagging.tag_artifacts",
+            side_effect=mock_tag,
+        ):
+            await tag_audio_artifact_step(
+                artifact,
+                cover_image_path=None,
+                album="Notebook title",
+                created_at="2026-08-24T12:00:00Z",
+                tags_config=PodcastTagsConfig(),
+            )
+
+        assert captured["album"] == "Notebook title"
+        assert captured["created_at"] == "2026-08-24T12:00:00Z"
 
     asyncio.run(_test())
 
@@ -183,6 +220,8 @@ def test_process_single_audio_task_step_fails_after_transcription_retries(
             ):
                 await process_single_audio_task_step(
                     notebook_id="test-nb",
+                    notebook_title="Test notebook",
+                    notebook_created_at="2026-08-24T12:00:00Z",
                     task_info=task_info,
                     cover_image_path=None,
                     working_dir="podcasts/wf_test123",
@@ -395,7 +434,7 @@ def test_deep_dive_workflow_runs_cover_and_enrichment_concurrently(
                     wf_config=workflow_config,
                     workdir=str(tmp_path),
                     workflow_id="wf-parallelism",
-                    source_file="source.txt",
+                    source_url="source.txt",
                     notebooklm_config=NotebookLMConfig(),
                 ),
                 timeout=0.2,
@@ -469,7 +508,7 @@ def test_deep_dive_workflow_processes_audio_tasks_concurrently(
                     wf_config=workflow_config,
                     workdir=str(tmp_path),
                     workflow_id="wf-audio-parallelism",
-                    source_file="source.txt",
+                    source_url="source.txt",
                     notebooklm_config=NotebookLMConfig(),
                 ),
                 timeout=0.2,

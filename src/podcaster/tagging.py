@@ -8,6 +8,7 @@ from mutagen.mp4 import MP4, MP4Cover
 
 from .config import PodcastTagsConfig
 from .models import PodcastGenArtifact
+from .notebook import get_notebook_url
 
 logger = logging.getLogger(__name__)
 
@@ -126,7 +127,7 @@ async def tag_artifacts(
         metadata = art_item.metadata.copy()
         gen_podcast_meta = metadata.get("generate-podcast", {})
         language = gen_podcast_meta.get("language")
-        source_url = f"https://notebooklm.google.com/notebook/{notebook_id}"
+        source_url = get_notebook_url(notebook_id)
 
         album_val = album or "NotebookLM Podcast"
         created_at_val = created_at

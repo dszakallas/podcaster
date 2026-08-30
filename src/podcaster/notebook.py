@@ -15,9 +15,14 @@ TITLE_SUGGESTION_PROMPT = (
 )
 
 
+def get_notebook_url(notebook_id: str) -> str:
+    """Return the standard NotebookLM web URL for a notebook ID."""
+    return f"https://notebooklm.google.com/notebook/{notebook_id}"
+
+
 async def upload_source(
     notebook_id: str,
-    source_file: str,
+    source_url: str,
     importer: ImporterConfig,
     client: RetryingNotebookLMClient,
     title: Optional[str] = None,
@@ -27,7 +32,7 @@ async def upload_source(
 
     res = await research.import_source(
         notebook_id=notebook_id,
-        source=source_file,
+        source=source_url,
         title=title,
         importer=importer,
         client=client,
@@ -35,9 +40,7 @@ async def upload_source(
     source_id = res.get("source_id")
     if not source_id:
         error_msg = res.get("error") or "Unknown error"
-        raise RuntimeError(
-            f"Failed to import source: {source_file}. Error: {error_msg}"
-        )
+        raise RuntimeError(f"Failed to import source: {source_url}. Error: {error_msg}")
     return source_id
 
 

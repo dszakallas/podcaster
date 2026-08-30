@@ -224,6 +224,7 @@ async def tag_audio_artifact_step(
     artifact: PodcastGenArtifact,
     cover_image_path: Optional[str],
     album: Optional[str],
+    created_at: Optional[str],
     tags_config: PodcastTagsConfig,
 ) -> PodcastGenArtifact:
     """Apply ID3 metadata to one downloaded podcast artifact."""
@@ -231,6 +232,7 @@ async def tag_audio_artifact_step(
         _single_artifact_stream(artifact),
         cover_path=cover_image_path,
         album=album,
+        created_at=created_at,
         tags_config=tags_config,
     ):
         return tagged_artifact
@@ -295,6 +297,8 @@ async def transcribe_audio_artifact_step(
 
 async def process_single_audio_task_step(
     notebook_id: str,
+    notebook_title: str,
+    notebook_created_at: Optional[str],
     task_info: PodcastGenTask,
     cover_image_path: Optional[str],
     working_dir: str,
@@ -330,7 +334,8 @@ async def process_single_audio_task_step(
             artifact = await tag_audio_artifact_step(
                 artifact,
                 cover_image_path,
-                completed_task.title,
+                notebook_title,
+                notebook_created_at,
                 tagging_config.spec,
             )
         if transcribe and (
@@ -378,7 +383,7 @@ async def deep_dive_article_workflow(
     workdir: str,
     workflow_id: str,
     title: Optional[str] = None,
-    source_file: Optional[str] = None,
+    source_url: Optional[str] = None,
     notebook_id: Optional[str] = None,
     length: Optional[str] = None,
     languages: Optional[List[str]] = None,
@@ -447,7 +452,7 @@ async def deep_dive_article_workflow(
         notebooklm_config=notebooklm_config,
         title=title,
         notebook_id=notebook_id,
-        from_source=source_file,
+        from_source=source_url,
     )
 
     derived_notebook_id = notebook_info["notebook_id"]
@@ -549,6 +554,8 @@ async def deep_dive_article_workflow(
         *(
             process_single_audio_task_step(
                 notebook_id=derived_notebook_id,
+                notebook_title=derived_title,
+                notebook_created_at=notebook_info.get("created_at"),
                 task_info=task,
                 cover_image_path=cover_path,
                 working_dir=working_dir,
@@ -573,13 +580,27 @@ async def deep_dive_article_workflow(
         await DBOS.set_event_async("current_step", "distribute")
         logger.info(f"Distributing to {len(wf_config.distribute)} targets...")
         wf_meta = {
-            "title": derived_title,
-            "notebook_id": derived_notebook_id,
+            "id": workflow_id,
+            "source_url": source_url,
+            "notebook": {
+                "id": derived_notebook_id,
+                "title": derived_title,
+                "url": notebook_mod.get_notebook_url(derived_notebook_id),
+                "creation_date": (notebook_info.get("created_at") or "")[:10],
+            },
             "preset": preset_name,
-            "languages": languages,
-            "length": length,
-            "files": [
-                os.path.basename(a.path) for a in processed_artifacts if a and a.path
+            "artifacts": [
+                {
+                    "id": artifact.artifact_id,
+                    "name": artifact.title,
+                    "language": artifact.metadata.get("generate-podcast", {}).get(
+                        "language"
+                    ),
+                    "path": artifact.path,
+                    "lrc_path": artifact.lrc_path,
+                }
+                for artifact in processed_artifacts
+                if artifact and artifact.path
             ],
         }
         targets: list[DistributionConfig] = []

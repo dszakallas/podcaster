@@ -197,10 +197,20 @@ async def _poll_single_task(
             )
 
             if generation_status.is_complete:
+                artifacts = await client.artifacts.list(notebook_id)
+                artifact = next(
+                    (item for item in artifacts or [] if item.id == task_id), None
+                )
                 return {
                     "status": TaskStatus.COMPLETED,
                     "notebook_id": notebook_id,
                     "artifact_id": task_id,
+                    "title": getattr(artifact, "title", None),
+                    "created_at": (
+                        artifact.created_at.isoformat()
+                        if artifact and getattr(artifact, "created_at", None)
+                        else None
+                    ),
                 }
 
             if generation_status.is_failed or generation_status.is_removed:

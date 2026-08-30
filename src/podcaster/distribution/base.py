@@ -24,6 +24,7 @@ class Distribution(ABC):
     async def _distribute(
         self,
         working_dir: str,
+        metadata: Optional[dict] = None,
     ) -> dict:
         """Executes the specific distribution operation for a given working directory."""
         ...
@@ -34,7 +35,7 @@ class Distribution(ABC):
         metadata: Optional[dict] = None,
     ) -> dict:
         """Executes the distribution operation and runs attached notifiers concurrently."""
-        result = await self._distribute(working_dir=working_dir)
+        result = await self._distribute(working_dir=working_dir, metadata=metadata)
 
         if self.notifiers:
             logger.info(
@@ -81,6 +82,7 @@ def build_distribution(
             destination=dist_cfg.rsync.destination or "",
             method=dist_cfg.rsync.method or "rsync",
             flags=dist_cfg.rsync.flags,
+            filename_template=dist_cfg.rsync.filename_template,
             notifiers=built_notifiers,
             name=name,
         )

@@ -57,7 +57,7 @@ class TestDurationToAudioLength:
 async def test_poll_single_task_waits_for_media_ready_status():
     client = MagicMock()
     client.artifacts.list = AsyncMock(
-        side_effect=AssertionError("polling must use poll_status")
+        return_value=[SimpleNamespace(id="artifact", title="Episode", created_at=None)]
     )
     client.artifacts.poll_status = AsyncMock(
         side_effect=[
@@ -81,7 +81,32 @@ async def test_poll_single_task_waits_for_media_ready_status():
 
     assert result["status"] == TaskStatus.COMPLETED
     assert client.artifacts.poll_status.await_count == 2
+    client.artifacts.list.assert_awaited_once_with("notebook")
     sleep.assert_awaited_once()
+
+
+@pytest.mark.anyio
+async def test_poll_single_task_retains_completed_artifact_title():
+    client = MagicMock()
+    client.artifacts.poll_status = AsyncMock(
+        return_value=SimpleNamespace(
+            status="completed",
+            is_complete=True,
+            is_failed=False,
+            is_removed=False,
+        )
+    )
+    client.artifacts.list = AsyncMock(
+        return_value=[
+            SimpleNamespace(
+                id="artifact", title="A descriptive episode", created_at=None
+            )
+        ]
+    )
+
+    result = await _poll_single_task(client, "notebook", "artifact", "en")
+
+    assert result["title"] == "A descriptive episode"
 
 
 @pytest.mark.anyio

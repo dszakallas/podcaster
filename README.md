@@ -128,29 +128,94 @@ from Podcaster's YAML configuration and is required when generating covers.
 
 ## Usage
 
-### 1. Full Automated Workflow
+### Workflows
 
-The easiest way to create a podcast using a named preset from `podcaster.yaml`:
+Workflows are DBOS-backed, durable podcast pipelines intended for automated, unattended execution. DBOS records each
+step, allowing interrupted runs to be recovered rather than restarting completed work. A workflow preset is defined
+under `workflow.presets` in `podcaster.yaml` and is run by its preset name.
+
+#### `deep-dive-article`
+
+`deep-dive-article` is the currently available workflow type. It creates a NotebookLM notebook from a local path or
+URL, optionally enriches it with web research and cover art, generates audio in one or more languages, tags and
+transcribes the output, then distributes it to configured targets.
+
+Its preset accepts these configuration fields:
+
+- `importer`: importer preset or inline importer configuration for the primary source.
+- `podcast_generator`: generator preset or inline configuration, including default `languages` and `length`.
+- `enrich_web`: `enable`, `retry_count`, and research `spec`.
+- `generate_cover`: `enable`, `retry_count`, and cover-generation `spec`.
+- `transcribe`: `enable`, `retry_count`, and a `podcast_transcriber` preset or inline configuration.
+- `tagging`: `enable` and a podcast-tag preset or inline configuration.
+- `distribute`: distribution presets or inline distribution configurations.
+
+For example:
+
+```yaml
+workflow:
+  workdir: "./podcasts"
+  presets:
+    deep-dive-article:
+      type: deep_dive_article
+      importer: { ref: default }
+      podcast_generator: { ref: default }
+      enrich_web: { enable: true, retry_count: 0, spec: { mode: fast } }
+      generate_cover: { enable: true, retry_count: 1, spec: {} }
+      transcribe:
+        enable: true
+        retry_count: 2
+        podcast_transcriber: { ref: default }
+      tagging: { enable: true, spec: { ref: default } }
+      distribute: [{ ref: kolobok }]
+```
+
+Run a preset with a required `SOURCE_URL` positional argument. It may be a local path or a URL. Use
+`--workflow-id` to supply a stable DBOS workflow ID; otherwise Podcaster creates one.
 
 ```bash
 # Basic usage with a new article (title is automatically derived)
-podcaster workflow run deep-dive-default ./article.pdf --verbose
+podcaster workflow run deep-dive-article ./article.pdf --verbose
 
 # Basic usage with a custom title
-podcaster workflow run deep-dive-default ./article.pdf --title "My Amazing Podcast" --verbose
+podcaster workflow run deep-dive-article ./article.pdf --title "My Amazing Podcast" --verbose
 
 # Using a direct URL (supports automated scraping for paywalled sites)
-podcaster workflow run deep-dive-default https://example.com/paywalled-site --title "Market Analysis" --verbose
-
-# Resuming a failed or interrupted workflow run
-podcaster workflow resume <notebook_id>
+podcaster workflow run deep-dive-article https://example.com/paywalled-site --title "Market Analysis" --verbose
 
 # Overriding preset defaults:
-podcaster workflow run deep-dive-default ./article.txt \
-  --title "Quick Podcast" --no-enrich-web --no-generate-cover --no-sync-plex
+podcaster workflow run deep-dive-article ./article.txt \
+  --workflow-id wf_daily_article --title "Quick Podcast" \
+  --no-enrich-web --no-generate-cover --no-transcribe
 ```
 
-This workflow will automatically:
+The CLI supports `--title`, `--length {short,default,long,auto}`, repeatable `--language`,
+`--enrich-web/--no-enrich-web`, `--generate-cover/--no-generate-cover`, `--transcribe/--no-transcribe`,
+`--workflow-id`, and `--workdir`.
+
+When a workflow distributes its output, it provides this metadata to the distribution target and its notifiers:
+
+```yaml
+id: wf_daily_article
+source_url: https://example.com/article
+notebook:
+  id: notebook-id
+  title: Notebook title
+  url: https://notebooklm.google.com/notebook/notebook-id
+  creation_date: 2026-08-30
+preset: deep-dive-article
+artifacts:
+  - id: artifact-id
+    name: Episode title
+    language: en
+    path: ./podcasts/wf_daily_article/Episode_title.m4a
+    lrc_path: ./podcasts/wf_daily_article/Episode_title.lrc
+```
+
+Rsync/rclone templates receive this metadata. `notebook.title` and `artifact.name` are sanitized immediately before
+template rendering; the metadata itself retains the original values.
+
+The workflow performs these stages:
 
 1. Create a NotebookLM notebook.
 2. Upload the source file or URL (optional scraper agent can be used).
@@ -162,7 +227,7 @@ This workflow will automatically:
 8. Rsync the files to a remote destination (if enabled).
 9. Sync the files to your Plex library.
 
-### 2. The Streaming Pipeline
+### The Streaming Pipeline
 
 You can run individual steps of the audio generation process using standard Unix pipes.
 
@@ -178,7 +243,7 @@ podcaster transcription poll | \
 podcaster transcription download
 ```
 
-### 3. Standalone Commands
+### Standalone Commands
 
 #### Import Web
 
@@ -230,6 +295,20 @@ podcaster transcription create \
 
 Distributes a podcast using a named distribution preset from the configuration (supporting rsync/rclone with optional
 notifiers like Plex or Discord). Supports passing custom flags to `rsync` or `rclone` via `--flag`.
+
+Workflow distribution uses `filename_template` to determine each remote audio and LRC path. Its context includes
+`notebook.id`, `notebook.title`, `notebook.creation_date`, `artifact.id`, and `artifact.name`; title and name are
+sanitized immediately before rendering. The default preserves the established layout:
+
+```yaml
+distributions:
+  my-media-server:
+    rsync:
+      destination: "media:/podcasts"
+      filename_template: >-
+        {{ notebook.creation_date }} - {{ notebook.title }} [nlm_{{ notebook.id }}]
+        /{{ artifact.name }} [{{ artifact.id }}]
+```
 
 ```bash
 podcaster distribute <notebook_id> --preset my-media-server [--flag "--dry-run"]

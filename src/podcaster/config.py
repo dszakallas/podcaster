@@ -215,6 +215,10 @@ class RsyncDistributionConfig(BaseModel):
     method: Literal["rsync", "rclone"] = "rsync"
     destination: str
     flags: List[str] = Field(default_factory=list)
+    filename_template: str = (
+        "{{ notebook.creation_date }} - {{ notebook.title }} [nlm_{{ notebook.id }}]"
+        "/{{ artifact.name }} [{{ artifact.id }}]"
+    )
 
 
 class PlexNotifierConfig(BaseModel):

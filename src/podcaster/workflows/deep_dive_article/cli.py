@@ -24,7 +24,7 @@ def create_command(
         name=preset_name,
         help=f"Run '{preset_name}' (type: deep_dive_article) workflow.",
     )
-    @click.argument("source_file", required=True)
+    @click.argument("source_url", required=True)
     @click.option(
         "--workflow-id",
         "-w",
@@ -68,7 +68,7 @@ def create_command(
     @verbose_option
     @async_command()
     async def run_cmd(
-        source_file,
+        source_url,
         workflow_id,
         title,
         length,
@@ -91,7 +91,7 @@ def create_command(
                 workdir=workdir,
                 workflow_id=wf_id,
                 title=title,
-                source_file=source_file,
+                source_url=source_url,
                 notebook_id=None,
                 length=length,
                 languages=lang_list,
