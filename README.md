@@ -167,7 +167,7 @@ workflow:
         retry_count: 2
         podcast_transcriber: { ref: default }
       tagging: { enable: true, spec: { ref: default } }
-      distribute: [{ ref: kolobok }]
+      distribute: [{ ref: my_media_server }]
 ```
 
 Run a preset with a required `SOURCE_URL` positional argument. It may be a local path or a URL. Use
