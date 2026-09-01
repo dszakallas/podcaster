@@ -7,11 +7,11 @@
 
 buildNpmPackage rec {
   pname = "ai-sdk-anthropic";
-  version = "4.0.16";
+  version = "4.0.46";
 
   src = fetchurl {
     url = "https://registry.npmjs.org/@ai-sdk/anthropic/-/anthropic-${version}.tgz";
-    hash = "sha512-vyH4D6Auih5H2xvVzzh2ep5pbdWiaV7JDC+jHUE7zZJ5Kyv0TteLav4DrOgHzRuyv8ptfUSqFF6Y8//f/Ec0fQ==";
+    hash = "sha512-/q/wWLArkavQHeOYdv8kZyJRTuasTRwrzoAnvUaY0sHx/BGDYDWW9ENn7lu/H5iUeYId6NhtYAVv+TlqHpp9Cg==";
   };
 
   postPatch = ''
@@ -24,7 +24,7 @@ buildNpmPackage rec {
   npmDeps = fetchNpmDeps {
     inherit src postPatch;
     name = "${pname}-${version}-npm-deps";
-    hash = "sha256-T9e64cNXfH7nNjdc7jb40AoUvz4Z3g0bi2khqhHoZYk=";
+    hash = "sha256-xwjgqpUr69FD0X5BhGsGKuUF0OxMa2PEwi/jC8VN2io=";
     nativeBuildInputs = [ jq ];
   };
 
