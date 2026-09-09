@@ -154,12 +154,14 @@ class AgentConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     command: str
     args: List[str] = Field(default_factory=list)
+    timeout: Optional[float] = Field(default=None, gt=0)
 
 
 class ScraperConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     tool: str = "playwright"
     agent: MaybeRef[AgentConfig]
+    timeout: Optional[float] = Field(default=None, gt=0)
 
 
 class ChainImporterConfig(BaseModel):

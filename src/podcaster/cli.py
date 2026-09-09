@@ -410,16 +410,24 @@ async def import_drive(notebook_id, url_or_id, title, importer):
     is_flag=True,
     help="Do not execute the scraper, only log the command that would run",
 )
+@click.option(
+    "--timeout",
+    type=float,
+    default=None,
+    help="Optional timeout in seconds for the scraper process",
+)
 @verbose_option
 @async_command()
-async def scrape(target, scraper_name, dry_run):
+async def scrape(target, scraper_name, dry_run, timeout):
     """Scrape a target URL and output the result with metadata on a single NDJSON line."""
+    if timeout is not None and timeout <= 0:
+        raise ValueError(f"Timeout must be positive, got {timeout}")
     config = load_config()
     scraper_cfg = config.scrapers.get(scraper_name)
     if not scraper_cfg:
         raise ValueError(f"Scraper '{scraper_name}' not found in configuration.")
     return await research.scrape_source(
-        target, dry_run=dry_run, scraper_config=scraper_cfg
+        target, dry_run=dry_run, scraper_config=scraper_cfg, timeout=timeout
     )
 
 

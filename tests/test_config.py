@@ -42,6 +42,33 @@ def test_scraper_requires_an_agent():
         ScraperConfig.model_validate({"tool": "playwright"})
 
 
+def test_scraper_config_timeout():
+    cfg = ScraperConfig.model_validate(
+        {"tool": "playwright", "agent": {"command": "echo"}, "timeout": 30.0}
+    )
+    assert cfg.timeout == 30.0
+
+    with pytest.raises(ValidationError):
+        ScraperConfig.model_validate(
+            {"tool": "playwright", "agent": {"command": "echo"}, "timeout": 0}
+        )
+
+    with pytest.raises(ValidationError):
+        ScraperConfig.model_validate(
+            {"tool": "playwright", "agent": {"command": "echo"}, "timeout": -10}
+        )
+
+
+def test_agent_config_timeout():
+    from podcaster.config import AgentConfig
+
+    cfg = AgentConfig.model_validate({"command": "echo", "timeout": 45})
+    assert cfg.timeout == 45.0
+
+    with pytest.raises(ValidationError):
+        AgentConfig.model_validate({"command": "echo", "timeout": 0})
+
+
 def test_tagging_requires_a_specification():
     with pytest.raises(ValidationError, match="spec"):
         TaggingConfig.model_validate({})

@@ -319,7 +319,7 @@ podcaster distribute <notebook_id> --preset my-media-server [--flag "--dry-run"]
 Scrapes the main article text from a target URL using the configured agent.
 
 ```bash
-podcaster scrape <target_url> --scraper <preset> [--dry-run]
+podcaster scrape <target_url> --scraper <preset> [--dry-run] [--timeout <seconds>]
 ```
 
 #### Edit a workflow state

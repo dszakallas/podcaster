@@ -43,6 +43,8 @@ scrapers:
     agent:
       # Reference to a defined agent from the 'agents' section above
       ref: agy-gemini-flash
+    # Optional timeout in seconds to kill the scraper process if stuck
+    # timeout: 300
 
 # Configurations for generating podcasts using NotebookLM
 podcast_generators:

@@ -16,14 +16,22 @@ from .models import ResearchResult, ResearchTask, TaskStatus
 from .utils.duration import parse_duration_minutes
 from .utils.files import sanitize
 from .utils.notebooklm import RetryingNotebookLMClient, get_notebooklm_client
+from .utils.process import (
+    DEFAULT_SHUTDOWN_GRACE_PERIOD,
+    run_process,
+    terminate_process,
+)
 from .utils.retry import is_transient_network_exception
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_SCRAPER_TOOL = "playwright"
+DEFAULT_SCRAPER_SHUTDOWN_GRACE_PERIOD = DEFAULT_SHUTDOWN_GRACE_PERIOD
 DEFAULT_IMPORTER_KEY = "default"
 DEFAULT_RESEARCH_TOPIC = "general"
 DEFAULT_RESEARCH_DURATION = "20 minutes"
+
+_terminate_process = terminate_process
 
 SCRAPER_PROMPT_TEMPLATE = (
     'Use the {{ tool }} MCP tool to navigate to the URL "{{ url }}". '
@@ -207,9 +215,13 @@ class ScraperImporter(Importer):
         self,
         config: Optional[Any] = None,
         match_expressions: Optional[List[str]] = None,
+        timeout: Optional[float] = None,
+        grace_period: float = DEFAULT_SCRAPER_SHUTDOWN_GRACE_PERIOD,
     ):
         super().__init__(match_expressions=match_expressions)
         self.config = config
+        self.timeout = timeout
+        self.grace_period = grace_period
 
     async def execute(
         self,
@@ -230,6 +242,8 @@ class ScraperImporter(Importer):
                 scraper_config=self.config,
                 title=title,
                 client=client,
+                timeout=self.timeout,
+                grace_period=self.grace_period,
             )
             return {"source_id": src_id, "importer": "scraper"}
         except Exception as e:
@@ -330,16 +344,25 @@ async def scrape_source(
     args: Optional[List[str]] = None,
     dry_run: bool = False,
     scraper_config: Optional[ScraperConfig] = None,
+    timeout: Optional[float] = None,
+    grace_period: float = DEFAULT_SCRAPER_SHUTDOWN_GRACE_PERIOD,
 ) -> Optional[dict]:
     """Scrapes a URL and returns the parsed agent metadata and content dictionary."""
     from jinja2 import Template
 
     if scraper_config:
         tool = tool or scraper_config.tool
+        if timeout is None:
+            timeout = scraper_config.timeout
         if scraper_config.agent:
             ag = scraper_config.agent
-            command = command or ag.command
-            args = args or ag.args or []
+            command = command or getattr(ag, "command", None)
+            args = args or getattr(ag, "args", None) or []
+            if timeout is None:
+                timeout = getattr(ag, "timeout", None)
+
+    if timeout is not None and timeout <= 0:
+        raise ValueError(f"Timeout must be positive, got {timeout}")
 
     if tool is None:
         tool = DEFAULT_SCRAPER_TOOL
@@ -368,41 +391,23 @@ async def scrape_source(
         logger.info(f"Would execute: {cmd_str}")
         return None
 
-    process = await asyncio.create_subprocess_exec(
-        *cmd_args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+    def _log_stderr_line(line_str: str) -> None:
+        logger.info(f"[{os.path.basename(agent_command)}] {line_str}")
+
+    result = await run_process(
+        cmd_args,
+        timeout=timeout,
+        grace_period=grace_period,
+        on_stderr_line=_log_stderr_line,
+        process_name="Scraper process",
     )
 
-    stderr_lines: list[str] = []
-
-    async def _read_stdout() -> bytes:
-        if process.stdout:
-            return await process.stdout.read()
-        return b""
-
-    async def _read_stderr() -> None:
-        if process.stderr:
-            while True:
-                line = await process.stderr.readline()
-                if not line:
-                    break
-                line_str = line.decode().rstrip()
-                if line_str:
-                    logger.info(f"[{os.path.basename(agent_command)}] {line_str}")
-                    stderr_lines.append(line_str)
-
-    stdout_bytes, _, _ = await asyncio.gather(
-        _read_stdout(),
-        _read_stderr(),
-        process.wait(),
-    )
-
-    if process.returncode != 0:
-        error_msg = "\n".join(stderr_lines).strip()
+    if result.returncode != 0:
         raise RuntimeError(
-            f"Scraping failed with exit code {process.returncode}: {error_msg}"
+            f"Scraping failed with exit code {result.returncode}: {result.stderr}"
         )
 
-    output = stdout_bytes.decode().strip()
+    output = result.stdout_text().strip()
     try:
         json_line = None
         for line in reversed(output.splitlines()):
@@ -432,13 +437,21 @@ async def scrape(
     command: Optional[str] = None,
     args: Optional[List[str]] = None,
     dry_run: bool = False,
+    timeout: Optional[float] = None,
+    grace_period: float = DEFAULT_SCRAPER_SHUTDOWN_GRACE_PERIOD,
 ) -> Optional[dict]:
     """Scrapes a target URL and returns a dictionary containing the content and metadata.
 
     If dry_run is True, it logs the command that would be executed and returns None.
     """
     return await scrape_source(
-        url, tool=tool, command=command, args=args, dry_run=dry_run
+        url,
+        tool=tool,
+        command=command,
+        args=args,
+        dry_run=dry_run,
+        timeout=timeout,
+        grace_period=grace_period,
     )
 
 
@@ -540,6 +553,8 @@ async def _import_scraper(
     client: RetryingNotebookLMClient,
     scraper_config: Optional[Any] = None,
     title: Optional[str] = None,
+    timeout: Optional[float] = None,
+    grace_period: float = DEFAULT_SCRAPER_SHUTDOWN_GRACE_PERIOD,
 ) -> str:
     if (
         not source.startswith(("http://", "https://"))
@@ -548,7 +563,12 @@ async def _import_scraper(
     ):
         raise ValueError(f"Scraper handler only supports web URLs, got: {source}")
 
-    res = await scrape_source(source, scraper_config=scraper_config)
+    res = await scrape_source(
+        source,
+        scraper_config=scraper_config,
+        timeout=timeout,
+        grace_period=grace_period,
+    )
     if not res or not res.get("content"):
         error_msg = res.get("error") if res else "No response"
         raise RuntimeError(f"Scraping returned no content: {error_msg}")
