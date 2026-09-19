@@ -134,11 +134,10 @@ Workflows are DBOS-backed, durable podcast pipelines intended for automated, una
 step, allowing interrupted runs to be recovered rather than restarting completed work. A workflow preset is defined
 under `workflow.presets` in `podcaster.yaml` and is run by its preset name.
 
-#### `deep-dive-article`
+#### `deep_dive_article`
 
-`deep-dive-article` is the currently available workflow type. It creates a NotebookLM notebook from a local path or
-URL, optionally enriches it with web research and cover art, generates audio in one or more languages, tags and
-transcribes the output, then distributes it to configured targets.
+Creates a NotebookLM notebook from a local path or URL, optionally enriches it with web research and cover art,
+generates audio in one or more languages, tags and transcribes the output, then distributes it to configured targets.
 
 Its preset accepts these configuration fields:
 
@@ -149,8 +148,6 @@ Its preset accepts these configuration fields:
 - `transcribe`: `enable`, `retry_count`, and a `podcast_transcriber` preset or inline configuration.
 - `tagging`: `enable` and a podcast-tag preset or inline configuration.
 - `distribute`: distribution presets or inline distribution configurations.
-
-For example:
 
 ```yaml
 workflow:
@@ -174,30 +171,114 @@ Run a preset with a required `SOURCE_URL` positional argument. It may be a local
 `--workflow-id` to supply a stable DBOS workflow ID; otherwise Podcaster creates one.
 
 ```bash
-# Basic usage with a new article (title is automatically derived)
+# Basic usage (title is automatically derived)
 podcaster workflow run deep-dive-article ./article.pdf --verbose
 
-# Basic usage with a custom title
+# With a custom title
 podcaster workflow run deep-dive-article ./article.pdf --title "My Amazing Podcast" --verbose
 
-# Using a direct URL (supports automated scraping for paywalled sites)
-podcaster workflow run deep-dive-article https://example.com/paywalled-site --title "Market Analysis" --verbose
+# From a URL (supports automated scraping for paywalled sites)
+podcaster workflow run deep-dive-article https://example.com/article --title "Market Analysis"
 
-# Overriding preset defaults:
+# Overriding preset defaults
 podcaster workflow run deep-dive-article ./article.txt \
   --workflow-id wf_daily_article --title "Quick Podcast" \
   --no-enrich-web --no-generate-cover --no-transcribe
 ```
 
-The CLI supports `--title`, `--length {short,default,long,auto}`, repeatable `--language`,
+CLI flags: `--title`, `--length {short,default,long,auto}`, repeatable `--language`,
 `--enrich-web/--no-enrich-web`, `--generate-cover/--no-generate-cover`, `--transcribe/--no-transcribe`,
 `--workflow-id`, and `--workdir`.
+
+The workflow performs these stages:
+
+1. Create a NotebookLM notebook.
+2. Upload the source file or URL (optional scraper agent can be used).
+3. Perform web research to enrich the context based on `enrich_web` settings.
+4. Generate a custom album cover.
+5. Trigger podcast generation in your configured default languages.
+6. Poll for completion, download the files, and tag them.
+7. Transcribe the audio to generate synchronized LRC lyrics (if enabled).
+8. Rsync the files to a remote destination (if enabled).
+
+#### `topic_workflow`
+
+Creates a set of podcasts from a research topic and a dynamic recipe. The recipe specifies a web research query and an
+ordered list of podcast generation jobs, each with a type, focus, and optional roles and language overrides. The
+workflow initializes a shared notebook, runs web research, generates cover art, then produces each podcast in the
+recipe concurrently before distributing the results.
+
+Its preset accepts the same configuration fields as `deep_dive_article` except `importer` (no source URL is required):
+
+- `podcast_generator`: default `languages` and `length` used when the recipe entry does not override them.
+- `enrich_web`, `generate_cover`, `transcribe`, `tagging`, `distribute`: identical to `deep_dive_article`.
+
+```yaml
+workflow:
+  workdir: "./podcasts"
+  presets:
+    topic-default:
+      type: topic_workflow
+      podcast_generator: { ref: default }
+      enrich_web: { enable: true, retry_count: 0, spec: { mode: fast } }
+      generate_cover: { enable: true, retry_count: 1, spec: {} }
+      transcribe:
+        enable: true
+        retry_count: 2
+        podcast_transcriber: { ref: default }
+      tagging: { enable: true, spec: { ref: default } }
+      distribute: [{ ref: my_media_server }]
+```
+
+A recipe is required at run time via one of three flags:
+
+```bash
+# From a natural language prompt (recipe inferred by NotebookLM)
+podcaster workflow run topic-default --prompt "Cover the EU AI Act: a deep dive and a policy debate"
+
+# From a YAML/JSON recipe file
+podcaster workflow run topic-default --recipe ./my_recipe.yaml
+
+# Inline JSON recipe
+podcaster workflow run topic-default \
+  --recipe-json '{"research":{"query":"EU AI Act"},"podcasts":[{"type":"TopicDeepDive","focus":"Key provisions"}]}'
+```
+
+Recipe schema:
+
+```yaml
+title: "Optional title override for the notebook"
+research:
+  query: "Web search query capturing the topic"
+  mode: "fast"  # "fast" or "deep"
+podcasts:
+  - type: "TopicDeepDive"      # comprehensive overview or analysis
+    focus: "Key provisions and compliance timeline"
+    languages: ["en"]          # optional, inherits podcast_generator default if omitted
+    length: "default"          # optional, inherits podcast_generator default if omitted
+    roles: ["Host", "Expert"]  # optional
+
+  - type: "TopicDebate"        # two contrasting viewpoints
+    focus: "Economic impact on SMEs"
+    roles: ["Regulatory Advocate", "Industry Critic"]  # required, exactly 2
+
+  - type: "TopicArticle"       # author interview for a specific research source
+    focus: "Analysis of Article X"
+    roles: ["Journalist", "Lead Author"]               # optional
+    source_id: "source-id"                             # optional, pin to a specific source
+```
+
+CLI flags: `--prompt/-p`, `--recipe/-r`, `--recipe-json`, `--title`, `--workflow-id/-w`,
+`--enrich-web/--no-enrich-web`, `--generate-cover/--no-generate-cover`, `--transcribe/--no-transcribe`,
+and `--workdir/-W`.
+
+#### Distribution metadata
 
 When a workflow distributes its output, it provides this metadata to the distribution target and its notifiers:
 
 ```yaml
 id: wf_daily_article
-source_url: https://example.com/article
+source_url: https://example.com/article  # deep_dive_article only
 notebook:
   id: notebook-id
   title: Notebook title
@@ -214,18 +295,6 @@ artifacts:
 
 Rsync/rclone templates receive this metadata. `notebook.title` and `artifact.name` are sanitized immediately before
 template rendering; the metadata itself retains the original values.
-
-The workflow performs these stages:
-
-1. Create a NotebookLM notebook.
-2. Upload the source file or URL (optional scraper agent can be used).
-3. Perform web research to enrich the context based on `enrich_web` settings.
-4. Generate a custom album cover.
-5. Trigger podcast generation in your configured default languages.
-6. Poll for completion, download the files, and tag them.
-7. Transcribe the audio to generate synchronized LRC lyrics (if enabled).
-8. Rsync the files to a remote destination (if enabled).
-9. Sync the files to your Plex library.
 
 ### The Streaming Pipeline
 

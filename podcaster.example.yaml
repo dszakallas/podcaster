@@ -57,14 +57,6 @@ podcast_generators:
     # Target languages for generation
     languages: ["en"]
     length: "long"
-  topic-deep-dive:
-    languages: ["en"]
-    length: "default"
-    task: "topic_deep_dive"
-  topic-debate:
-    languages: ["en"]
-    length: "default"
-    task: "topic_debate"
 
 # ID3 tagging settings for the generated audio files
 podcast_tags:
@@ -83,14 +75,14 @@ podcast_transcribers:
     # Languages configured for transcription tasks
     languages: ["cs", "en"]
 
-# Workflow configurations for managing deep dive podcast generation pipelines
+# Workflow configurations for managing podcast generation pipelines
 workflow:
   # Working directory root, workfow files will be saved into a unique subdirectory keyed by the workflow id; defaults to the current directory.
   workdir: "."
   presets:
     # Reference name of the workflow preset
     deep-dive-default:
-      # The workflow type (currently only "deep_dive_article" is supported)
+      # The workflow type ("deep_dive_article" or "topic_workflow")
       type: "deep_dive_article"
       # Reference to an importer configuration under 'importers'
       importer:
@@ -166,24 +158,25 @@ workflow:
       distribute:
         - ref: gdrive-backup
 
-# Topic workflow recipe format (passed via -r/--recipe, --recipe-json, or inferred from -p/--prompt):
+# Topic workflow recipe format (passed via -r/--recipe, --recipe-json, or inferred from -p/--prompt).
+# Schema reference — see README.md for full documentation:
 #
+# title: "Optional notebook title override"
 # research:
 #   query: "Future of AI code generation"
 #   mode: "deep" # "fast" or "deep"
 # podcasts:
-#   - type: "TopicDeepDive"
+#   - type: "TopicDeepDive"          # comprehensive overview or analysis
 #     focus: "Autonomous developer agents"
-#     length: "default"
-#     languages: ["en"]
-#     host_role: "Host"
-#     co_host_role: "Tech Expert"
-#   - type: "TopicDebate"
+#     length: "default"              # optional: short, default, long, auto
+#     languages: ["en"]              # optional: inherits podcast_generator default
+#     roles: ["Host", "Tech Expert"] # optional: exactly 2 elements
+#   - type: "TopicDebate"            # two contrasting viewpoints
 #     focus: "Economic impact and job disruption"
-#     length: "short"
-#     languages: ["en"]
-#     host_role: "Skeptic"
-#     guest_role: "Optimist"
+#     roles: ["Skeptic", "Optimist"] # required for TopicDebate, exactly 2
+#   - type: "TopicArticle"           # author interview for a research source
+#     focus: "Key findings of Paper X"
+#     roles: ["Journalist", "Lead Author"] # optional
 
 # Importers definition
 importers:
