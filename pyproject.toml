@@ -8,7 +8,7 @@ dependencies = [
     "click>=8.4.1",
     "mutagen>=1.47.0",
     "notebooklm-py[browser]==0.8.1",
-    "playwright>=1.50.0",
+    "playwright>=1.50.0",  # Required for browser-based automation and Playwright MCP server
     "jinja2",
     "pydantic",
     "pyyaml",
@@ -17,8 +17,12 @@ dependencies = [
     "httpx",
     "google-cloud-speech",
     "google-cloud-storage",
-    "rookiepy>=0.5.6",
+    "rookiepy>=0.5.6",  # Required for browser cookie extraction for NotebookLM authentication
     "dbos>=2.31.0",
+    "pytimeparse2>=1.7.0",
+    "langcodes>=3.5.0",
+    "aiostream>=0.6.4",
+    "json-repair>=0.30.0",
 ]
 
 [project.scripts]
@@ -39,14 +43,26 @@ target-version = "py312"
 src = ["src"]
 
 [tool.ruff.lint]
-select = ["E", "F", "I"]
+select = ["E", "F", "I", "B", "C901", "PLR0912", "PLR0913", "PLR0915", "SIM", "UP"]
 ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"src/podcaster/cli/*" = ["PLR0913"]
+"src/podcaster/workflows/**/cli.py" = ["PLR0913"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 15
+
+[tool.ruff.lint.pylint]
+max-args = 8
+max-branches = 15
+max-statements = 60
 
 [tool.pyright]
 include = ["src/podcaster", "tests"]
 typeCheckingMode = "standard"
 pythonVersion = "3.12"
-venvPath = ".devenv/state"
+venvPath = ".devenv/profiles/agents/state"
 venv = "venv"
 
 [tool.pytest.ini_options]

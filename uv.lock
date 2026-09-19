@@ -3,6 +3,18 @@ revision = 3
 requires-python = "==3.12.*"
 
 [[package]]
+name = "aiostream"
+version = "0.8.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/02/be/c3e2b0e360a0350294df8f8d90cf51bef258ca1421b8bf1e4bea49a2661a/aiostream-0.8.1.tar.gz", hash = "sha256:32d180b4ab01ebb2fc59eda7fa59f496895a4d07b32fc57537d1dade2514a8a1", size = 45013, upload-time = "2026-09-16T10:41:54.253Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7b/8c/018f92b5e71460ed4e83bb066a64c0a0072d8f90273464c75104bab73262/aiostream-0.8.1-py3-none-any.whl", hash = "sha256:f31c894f1e14a0825a45458e311e0b2a12d80b0d247a0fdf46d7d8ecaf4bc796", size = 41858, upload-time = "2026-09-16T10:41:52.865Z" },
+]
+
+[[package]]
 name = "annotated-types"
 version = "0.8.0"
 source = { registry = "https://pypi.org/simple" }
@@ -452,6 +464,24 @@ wheels = [
 ]
 
 [[package]]
+name = "json-repair"
+version = "0.63.4"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/62/72/4ec122befe7c2091ba7370d985cf0a3d4dbeccc2f832898ddb7921b4ab94/json_repair-0.63.4.tar.gz", hash = "sha256:77aa642193d62b02b889e8ce0df33898d3ea87282f0b9d8653f8ce8772c642b4", size = 52906, upload-time = "2026-08-25T07:39:02.725Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a1/ea/1a7b47196b0d03f59a80f5218b2a34160587c84ca8b0bcb56cb4ee93834e/json_repair-0.63.4-py3-none-any.whl", hash = "sha256:0f374f3eee21454aef0a5d72c06b8689b660a1788f80ab392639e3f7d5c5d458", size = 51295, upload-time = "2026-08-25T07:39:01.259Z" },
+]
+
+[[package]]
+name = "langcodes"
+version = "3.5.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/a9/75/f9edc5d72945019312f359e69ded9f82392a81d49c5051ed3209b100c0d2/langcodes-3.5.1.tar.gz", hash = "sha256:40bff315e01b01d11c2ae3928dd4f5cbd74dd38f9bd912c12b9a3606c143f731", size = 191084, upload-time = "2025-12-02T16:22:01.627Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/dd/c1/d10b371bcba7abce05e2b33910e39c33cfa496a53f13640b7b8e10bb4d2b/langcodes-3.5.1-py3-none-any.whl", hash = "sha256:b6a9c25c603804e2d169165091d0cdb23934610524a21d226e4f463e8e958a72", size = 183050, upload-time = "2025-12-02T16:21:59.954Z" },
+]
+
+[[package]]
 name = "markdown-it-py"
 version = "4.2.0"
 source = { registry = "https://pypi.org/simple" }
@@ -579,6 +609,7 @@ name = "podcaster"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "aiostream" },
     { name = "click" },
     { name = "dbos" },
     { name = "google-cloud-speech" },
@@ -586,11 +617,14 @@ dependencies = [
     { name = "google-genai" },
     { name = "httpx" },
     { name = "jinja2" },
+    { name = "json-repair" },
+    { name = "langcodes" },
     { name = "mutagen" },
     { name = "notebooklm-py", extra = ["browser"] },
     { name = "pillow" },
     { name = "playwright" },
     { name = "pydantic" },
+    { name = "pytimeparse2" },
     { name = "pyyaml" },
     { name = "rookiepy" },
 ]
@@ -602,6 +636,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aiostream", specifier = ">=0.6.4" },
     { name = "click", specifier = ">=8.4.1" },
     { name = "dbos", specifier = ">=2.31.0" },
     { name = "google-cloud-speech" },
@@ -609,11 +644,14 @@ requires-dist = [
     { name = "google-genai" },
     { name = "httpx" },
     { name = "jinja2" },
+    { name = "json-repair", specifier = ">=0.30.0" },
+    { name = "langcodes", specifier = ">=3.5.0" },
     { name = "mutagen", specifier = ">=1.47.0" },
     { name = "notebooklm-py", extras = ["browser"], specifier = "==0.8.1" },
     { name = "pillow" },
     { name = "playwright", specifier = ">=1.50.0" },
     { name = "pydantic" },
+    { name = "pytimeparse2", specifier = ">=1.7.0" },
     { name = "pyyaml" },
     { name = "rookiepy", specifier = ">=0.5.6" },
 ]
@@ -806,6 +844,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/66/c0/0c8b6ad9f17a802ee498c46e004a0eb49bc148f2fd230864601a86dcf6db/python-dateutil-2.9.0.post0.tar.gz", hash = "sha256:37dd54208da7e1cd875388217d5e00ebd4179249f90fb72437e91a35459a0ad3", size = 342432, upload-time = "2024-03-01T18:36:20.211Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/ec/57/56b9bcc3c9c6a792fcbaf139543cee77261f3651ca9da0c93f5c1221264b/python_dateutil-2.9.0.post0-py2.py3-none-any.whl", hash = "sha256:a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427", size = 229892, upload-time = "2024-03-01T18:36:18.57Z" },
+]
+
+[[package]]
+name = "pytimeparse2"
+version = "1.7.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/19/10/cc63fecd69905eb4d300fe71bd580e4a631483e9f53fdcb8c0ad345ce832/pytimeparse2-1.7.1.tar.gz", hash = "sha256:98668cdcba4890e1789e432e8ea0059ccf72402f13f5d52be15bdfaeb3a8b253", size = 10431, upload-time = "2023-05-11T21:40:55.774Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/17/9e/85abf91ef5df452f56498927affdb7128194d15644084f6c6722477c305b/pytimeparse2-1.7.1-py3-none-any.whl", hash = "sha256:a162ea6a7707fd0bb82dd99556efb783935f51885c8bdced0fce3fffe85ab002", size = 6136, upload-time = "2023-05-11T21:40:46.051Z" },
 ]
 
 [[package]]

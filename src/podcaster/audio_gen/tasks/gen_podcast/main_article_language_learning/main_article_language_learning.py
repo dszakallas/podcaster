@@ -1,11 +1,12 @@
-import json
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 from jinja2 import Environment
 from notebooklm import NotebookLMClient
 from pydantic import BaseModel
+
+from podcaster.audio_gen.prompting import extract_json_payload
 
 logger = logging.getLogger(__name__)
 
@@ -15,9 +16,9 @@ if TYPE_CHECKING:
 
 class Inputs(BaseModel):
     source_id: str
-    target_level: Optional[str] = "B2"  # A1, A2, B1, B2
-    delivery_speed: Optional[str] = "normal"  # normal, slow, slower
-    segmented_summaries: Optional[str] = "off"  # off, moderate, frequent
+    target_level: str | None = "B2"  # A1, A2, B1, B2
+    delivery_speed: str | None = "normal"  # normal, slow, slower
+    segmented_summaries: str | None = "off"  # off, moderate, frequent
 
 
 async def get_prompt(
@@ -63,23 +64,15 @@ async def get_prompt(
     response = await client.chat.ask(
         params.notebook_id, prompt, source_ids=[inputs.source_id]
     )
-    answer = response.answer.strip()
-
-    # Clean up possible markdown wrappers
-    if answer.startswith("```json"):
-        answer = answer[7:]
-    elif answer.startswith("```"):
-        answer = answer[3:]
-    if answer.endswith("```"):
-        answer = answer[:-3]
+    answer = response.answer
 
     try:
-        data = json.loads(answer.strip())
+        data = extract_json_payload(answer)
         category = data.get("category", "Language Learning")
         host_role = data.get("host_role", "Teacher")
         guest_role = data.get("guest_role", "Expert")
         agenda = data.get("agenda", None)
-    except json.JSONDecodeError:
+    except ValueError:
         logger.debug(f"Failed to parse format args JSON: {answer}")
         category = "Language Learning"
         host_role = "Teacher"
