@@ -1,9 +1,9 @@
 """Tests for command-line JSON input validation."""
 
 import asyncio
-import logging
 import io
 import json
+import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -33,10 +33,10 @@ async def test_parse_input_stream_rejects_invalid_arg_json() -> None:
 async def test_stream_stdin_rejects_invalid_json(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(cli_module.sys, "stdin", io.StringIO("not-json\n"))
+    monkeypatch.setattr(cli_module.input.sys, "stdin", io.StringIO("not-json\n"))
 
     with pytest.raises(ValueError, match="Invalid JSON on stdin line 1"):
-        async for _ in cli_module.stream_stdin():
+        async for _ in cli_module.input.stream_stdin():
             pass
 
 
@@ -79,10 +79,10 @@ def test_workflow_resume_uses_dbos_async_api() -> None:
     dbos_config = object()
     with (
         patch(
-            "podcaster.cli.load_config",
+            "podcaster.cli.workflow.load_config",
             return_value=SimpleNamespace(dbos=dbos_config),
         ),
-        patch("podcaster.cli.ensure_dbos_initialized") as initialize_dbos,
+        patch("podcaster.cli.workflow.ensure_dbos_initialized") as initialize_dbos,
         patch("podcaster.workflows.load_workflow_definitions") as load_definitions,
         patch(
             "dbos.DBOS.get_workflow_status_async",
@@ -92,11 +92,11 @@ def test_workflow_resume_uses_dbos_async_api() -> None:
         patch.object(dbos.DBOS, "application_version", "current"),
         patch("dbos.DBOS.resume_workflow_async", new_callable=AsyncMock) as resume,
         patch(
-            "podcaster.cli.wait_for_workflow_result",
+            "podcaster.cli.workflow.wait_for_workflow_result",
             new_callable=AsyncMock,
             return_value={"status": "resumed"},
         ) as wait,
-        patch("podcaster.cli.shutdown_dbos") as shutdown,
+        patch("podcaster.cli.workflow.shutdown_dbos") as shutdown,
     ):
         result = CliRunner().invoke(cli, ["workflow", "resume", "wf-1"])
 
@@ -118,10 +118,10 @@ def test_workflow_resume_force_forks_incompatible_workflow() -> None:
     fork = SimpleNamespace(workflow_id="wf-fork")
     with (
         patch(
-            "podcaster.cli.load_config",
+            "podcaster.cli.workflow.load_config",
             return_value=SimpleNamespace(dbos=dbos_config),
         ),
-        patch("podcaster.cli.ensure_dbos_initialized"),
+        patch("podcaster.cli.workflow.ensure_dbos_initialized"),
         patch("podcaster.workflows.load_workflow_definitions"),
         patch(
             "dbos.DBOS.get_workflow_status_async",
@@ -140,18 +140,16 @@ def test_workflow_resume_force_forks_incompatible_workflow() -> None:
             return_value=fork,
         ) as fork_workflow,
         patch(
-            "podcaster.cli.wait_for_workflow_result",
+            "podcaster.cli.workflow.wait_for_workflow_result",
             new_callable=AsyncMock,
             return_value={"workflow_id": "wf-fork"},
         ) as wait,
-        patch("podcaster.cli.shutdown_dbos"),
+        patch("podcaster.cli.workflow.shutdown_dbos"),
     ):
         result = CliRunner().invoke(cli, ["workflow", "resume", "--force", "wf-1"])
 
     assert result.exit_code == 0
-    fork_workflow.assert_awaited_once_with(
-        "wf-1", 15, application_version="current"
-    )
+    fork_workflow.assert_awaited_once_with("wf-1", 15, application_version="current")
     wait.assert_awaited_once_with("wf-fork")
 
 
@@ -196,10 +194,10 @@ def test_workflow_status_reports_dbos_step_details() -> None:
 
     with (
         patch(
-            "podcaster.cli.load_config",
+            "podcaster.cli.workflow.load_config",
             return_value=SimpleNamespace(dbos=None),
         ),
-        patch("podcaster.cli.ensure_dbos_initialized"),
+        patch("podcaster.cli.workflow.ensure_dbos_initialized"),
         patch("dbos.DBOS.get_workflow_status", return_value=workflow_status),
         patch("dbos.DBOS.list_workflow_steps", return_value=steps),
     ):
@@ -241,10 +239,10 @@ def test_workflow_list_uses_dbos_configuration() -> None:
     dbos_config = object()
     with (
         patch(
-            "podcaster.cli.load_config",
+            "podcaster.cli.workflow.load_config",
             return_value=SimpleNamespace(dbos=dbos_config),
         ),
-        patch("podcaster.cli.ensure_dbos_initialized") as initialize_dbos,
+        patch("podcaster.cli.workflow.ensure_dbos_initialized") as initialize_dbos,
         patch("dbos.DBOS.list_workflows", return_value=[]),
     ):
         result = CliRunner().invoke(cli, ["workflow", "list"])

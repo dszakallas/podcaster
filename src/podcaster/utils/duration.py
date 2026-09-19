@@ -1,26 +1,27 @@
 """Podcast-duration parsing and normalization."""
 
-import re
+import pytimeparse2
 
 _PRESET_DURATIONS: dict[str, str] = {
     "short": "10 minutes",
     "default": "20 minutes",
     "long": "30 minutes",
 }
-_DURATION_RE = r"""(?x)
-    ^\s*
-    (?:(\d+)\s*h(?:ours?)?)?\s*
-    (?:(\d+)\s*m(?:in(?:utes?)?)?)
-    \s*$
-"""
 
 
 def parse_duration_minutes(duration: str) -> int | None:
     """Parse a human-readable duration into total minutes."""
-    match = re.match(_DURATION_RE, duration.strip(), re.VERBOSE | re.IGNORECASE)
-    if not match:
+    if not duration or not duration.strip():
         return None
-    return int(match.group(1) or 0) * 60 + int(match.group(2) or 0)
+    seconds = pytimeparse2.parse(duration, as_timedelta=False)
+    if seconds is None:
+        return None
+    total_seconds = (
+        seconds.total_seconds()
+        if not isinstance(seconds, (int, float))
+        else float(seconds)
+    )
+    return int(total_seconds // 60)
 
 
 def resolve_duration(length: str) -> str:

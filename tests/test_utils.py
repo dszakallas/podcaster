@@ -45,6 +45,7 @@ def test_configure_dbos_logging_uses_application_formatter():
         dbos_logger.setLevel(original_level)
         dbos_logger.propagate = original_propagate
 
+
 # ---------------------------------------------------------------------------
 # sanitize
 # ---------------------------------------------------------------------------
@@ -121,8 +122,7 @@ class TestParseDurationMinutes:
         assert parse_duration_minutes("0 minutes") == 0
 
     def test_hours_only_no_minutes(self):
-        # The regex requires minutes
-        assert parse_duration_minutes("1 hour") is None
+        assert parse_duration_minutes("1 hour") == 60
 
     def test_empty_string(self):
         assert parse_duration_minutes("") is None

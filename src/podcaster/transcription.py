@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import logging
 import multiprocessing
 import os
@@ -6,81 +7,44 @@ import subprocess
 import tempfile
 import time
 import uuid
+from collections.abc import AsyncGenerator, AsyncIterable
 from concurrent.futures import ThreadPoolExecutor
-from typing import AsyncGenerator, AsyncIterable
+from typing import Any
 
+import langcodes
 from google.cloud import storage
 from google.cloud.speech_v2 import SpeechClient
 from google.cloud.speech_v2.types import cloud_speech
 
 from .config import GCPConfig, PodcastTranscriptionConfig
 from .models import PodcastGenArtifact, TaskStatus, TranscriptionTask
-from .utils.retry import is_transient_network_exception
+from .utils import PollingJob, PollStatus
 
 logger = logging.getLogger(__name__)
 
 MAX_POLL_TIMEOUT_SECONDS = 1800.0
 
-# Simple mapping for common languages to BCP-47
-LANGUAGE_MAP = {
-    "af": "af-ZA",
-    "am": "am-ET",
+LANGUAGE_EXCEPTIONS: dict[str, str] = {
     "ar": "ar-SA",
-    "az": "az-AZ",
-    "bg": "bg-BG",
-    "bn": "bn-BD",
-    "ca": "ca-ES",
-    "cs": "cs-CZ",
-    "da": "da-DK",
-    "de": "de-DE",
-    "el": "el-GR",
-    "en": "en-US",
-    "es": "es-ES",
-    "et": "et-EE",
-    "eu": "eu-ES",
-    "fa": "fa-IR",
-    "fi": "fi-FI",
-    "fr": "fr-FR",
-    "gl": "gl-ES",
-    "gu": "gu-IN",
-    "he": "he-IL",
-    "hi": "hi-IN",
-    "hr": "hr-HR",
-    "hu": "hu-HU",
-    "id": "id-ID",
-    "is": "is-IS",
-    "it": "it-IT",
-    "ja": "ja-JP",
-    "jv": "jv-ID",
-    "kn": "kn-IN",
-    "ko": "ko-KR",
-    "lt": "lt-LT",
-    "lv": "lv-LV",
-    "ml": "ml-IN",
-    "mr": "mr-IN",
-    "ms": "ms-MY",
-    "nl": "nl-NL",
-    "no": "no-NO",
-    "pl": "pl-PL",
     "pt": "pt-PT",
-    "ro": "ro-RO",
-    "ru": "ru-RU",
-    "sk": "sk-SK",
-    "sl": "sl-SI",
-    "sq": "sq-AL",
-    "sr": "sr-RS",
-    "sv": "sv-SE",
     "sw": "sw-KE",
-    "ta": "ta-IN",
-    "te": "te-IN",
-    "th": "th-TH",
-    "tr": "tr-TR",
-    "uk": "uk-UA",
-    "ur": "ur-PK",
-    "vi": "vi-VN",
-    "zh": "zh-CN",
-    "zu": "zu-ZA",
 }
+
+
+def to_bcp47(lang_code: str) -> str:
+    """Resolve a language code to a BCP-47 tag with territory (e.g., 'en' -> 'en-US')."""
+    if lang_code in LANGUAGE_EXCEPTIONS:
+        return LANGUAGE_EXCEPTIONS[lang_code]
+    try:
+        lang = langcodes.Language.get(lang_code)
+        maxed = lang.maximize()
+        if maxed.territory:
+            return langcodes.Language(
+                language=maxed.language, territory=maxed.territory
+            ).to_tag()
+        return lang.to_tag()
+    except Exception:
+        return lang_code
 
 
 def preprocess_audio(input_path: str, output_path: str, speed_factor: float = 1.5):
@@ -174,7 +138,7 @@ async def create_transcription_jobs(
         metadata = art_item.metadata
         gen_podcast_meta = metadata.get("generate-podcast", {})
         lang_code = gen_podcast_meta.get("language", "en")
-        bcp47_lang = LANGUAGE_MAP.get(lang_code, lang_code)
+        bcp47_lang = to_bcp47(lang_code)
 
         artifact_id = art_item.artifact_id
 
@@ -246,15 +210,11 @@ async def create_transcription_jobs(
         except Exception as e:
             logger.error(f"Failed to start transcription for {local_path}: {e}")
             if preprocessed_path and os.path.exists(preprocessed_path):
-                try:
+                with contextlib.suppress(Exception):
                     os.remove(preprocessed_path)
-                except Exception:
-                    pass
             if gcs_uri:
-                try:
+                with contextlib.suppress(Exception):
                     await delete_from_gcs(gcs_uri)
-                except Exception:
-                    pass
             raise
 
     executor.shutdown()
@@ -273,58 +233,32 @@ async def poll_transcription_jobs(
         client_options={"api_endpoint": f"{location}-speech.googleapis.com"}
     )
 
-    async for t in tasks:
-        task_id = t.task_id
-        logger.info(f"Polling transcription operation: {task_id}")
-        started_at = time.time()
-        while True:
+    async def check_status(t: TranscriptionTask) -> PollStatus:
+        logger.info(f"Polling transcription operation: {t.task_id}")
+        gapic_op = client.get_operation(
+            request=operations_pb2.GetOperationRequest(name=t.task_id)
+        )
+        op = api_operation.from_gapic(
+            gapic_op,
+            client.transport.operations_client,
+            cloud_speech.BatchRecognizeResponse,
+        )
+        if op.done():
             try:
-                gapic_op = client.get_operation(
-                    request=operations_pb2.GetOperationRequest(name=task_id)
-                )
-                op = api_operation.from_gapic(
-                    gapic_op,
-                    client.transport.operations_client,
-                    cloud_speech.BatchRecognizeResponse,
-                )
-                if op.done():
-                    try:
-                        # Call result to verify it completed without error
-                        op.result()
-                        yield t.model_copy(update={"status": TaskStatus.COMPLETED})
-                    except Exception as e:
-                        yield t.model_copy(
-                            update={"status": TaskStatus.FAILED, "error": str(e)}
-                        )
-                    break
+                op.result()
+                return PollStatus(status=TaskStatus.COMPLETED)
             except Exception as e:
-                if not is_transient_network_exception(e):
-                    logger.error(
-                        f"Non-retryable error polling transcription task {task_id}: {e}"
-                    )
-                    yield t.model_copy(
-                        update={"status": TaskStatus.FAILED, "error": str(e)}
-                    )
-                    break
+                return PollStatus(status=TaskStatus.FAILED, error=str(e))
+        return PollStatus(status=TaskStatus.IN_PROGRESS)
 
-                logger.warning(
-                    f"Transient network error polling transcription task {task_id}: {e}"
-                )
-
-            elapsed = time.time() - started_at
-            if elapsed > MAX_POLL_TIMEOUT_SECONDS:
-                logger.error(
-                    f"Polling transcription task {task_id} timed out after {elapsed:.1f}s"
-                )
-                yield t.model_copy(
-                    update={
-                        "status": TaskStatus.FAILED,
-                        "error": f"Transcription task {task_id} timed out after {elapsed:.1f}s",
-                    }
-                )
-                break
-
-            await asyncio.sleep(10)
+    polling_job = PollingJob(
+        check_status=check_status,
+        timeout=MAX_POLL_TIMEOUT_SECONDS,
+        interval=10.0,
+        sleep=asyncio.sleep,
+    )
+    async for t in polling_job.poll_stream(tasks):
+        yield t
 
 
 async def download_transcription_jobs(
@@ -418,10 +352,8 @@ async def download_transcription_jobs(
                 except Exception as e:
                     logger.warning(f"Failed to delete staging file from GCS: {e}")
             if preprocessed_path and os.path.exists(preprocessed_path):
-                try:
+                with contextlib.suppress(Exception):
                     os.remove(preprocessed_path)
-                except Exception:
-                    pass
 
 
 async def transcribe_artifacts(
@@ -429,47 +361,35 @@ async def transcribe_artifacts(
     gcp_config: GCPConfig,
     transcription_config: PodcastTranscriptionConfig,
 ) -> AsyncGenerator[TranscriptionTask, None]:
-    # 1. Create jobs
-    tasks = []
-    async for task in create_transcription_jobs(
+    jobs = create_transcription_jobs(
         artifacts,
         gcp_config=gcp_config,
         transcription_config=transcription_config,
-    ):
-        tasks.append(task)
-
-    # 2. Poll jobs
-    async def tasks_gen():
-        for t in tasks:
-            yield t
-
-    completed = []
-    async for comp in poll_transcription_jobs(tasks_gen(), gcp_config=gcp_config):
-        completed.append(comp)
-
-    # 3. Download results
-    async def completed_gen():
-        for c in completed:
-            yield c
-
-    async for result in download_transcription_jobs(
-        completed_gen(), gcp_config=gcp_config
-    ):
+    )
+    polled = poll_transcription_jobs(jobs, gcp_config=gcp_config)
+    async for result in download_transcription_jobs(polled, gcp_config=gcp_config):
         yield result
+
+
+def _duration_to_seconds(offset: Any) -> float:
+    if offset is None:
+        return 0.0
+    if hasattr(offset, "total_seconds"):
+        return float(offset.total_seconds())
+    return float(getattr(offset, "seconds", 0) + getattr(offset, "nanos", 0) / 1e9)
 
 
 def generate_lrc(
     response: cloud_speech.BatchRecognizeResponse,
     output_path: str,
     speed_factor: float = 1.0,
-):
+) -> None:
     """Generates an LRC file, scaling timestamps by speed_factor."""
-    lines = []
+    lines: list[str] = []
 
     logger.info(f"Generating LRC for {len(response.results)} files in response...")
     for file_uri, file_result in response.results.items():
         logger.debug(f"Processing file result for {file_uri}")
-        # result.error is a google.rpc.Status
         if file_result.error.code != 0:
             logger.warning(
                 f"Skipping {file_uri} due to error: {file_result.error.message}"
@@ -490,23 +410,11 @@ def generate_lrc(
                 lines.append(f"[00:00.00]{alt.transcript}")
                 continue
 
-            curr_words = []
-            curr_start = None
+            curr_words: list[str] = []
+            curr_start: float | None = None
 
             for word in alt.words:
-                # Handle start_offset
-                start_offset = (
-                    word.start_offset if hasattr(word, "start_offset") else None
-                )
-                if start_offset is None:
-                    seconds = 0.0
-                elif hasattr(start_offset, "total_seconds"):
-                    seconds = float(getattr(start_offset, "total_seconds")())
-                else:
-                    seconds = (
-                        getattr(start_offset, "seconds", 0)
-                        + getattr(start_offset, "nanos", 0) / 1e9
-                    )
+                seconds = _duration_to_seconds(getattr(word, "start_offset", None))
 
                 if curr_start is None:
                     curr_start = seconds
@@ -522,8 +430,7 @@ def generate_lrc(
                     curr_words.append(word.word)
 
             # Flush final group for this result
-            if curr_words:
-                assert curr_start is not None
+            if curr_words and curr_start is not None:
                 original_seconds = curr_start * speed_factor
                 ts = (
                     f"[{int(original_seconds // 60):02d}:{original_seconds % 60:05.2f}]"

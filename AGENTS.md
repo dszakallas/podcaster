@@ -15,17 +15,134 @@ This repository uses Nix `devenv` for managing its development environment and d
 
 - **Strict `uv` Usage**: This project strictly uses `uv` for all Python package management and script execution.
 - **Forbidden Commands**: Do NOT use standalone `pip` or `python` commands. Always use `uv pip`, `uv run`, `uv sync`, etc.
-- **Configuration Loading Scope**: Never call `load_config()` outside `cli.py`. Configuration objects
-  (such as `gcp_config`, `wf_config`, etc.) MUST be loaded in `cli.py` and passed down to functions
-  and workflow modules as explicit arguments.
+- **Configuration Loading Scope**: Never call `load_config()` outside the CLI package
+  (`src/podcaster/cli/`). Configuration objects (such as `gcp_config`, `wf_config`, etc.)
+  MUST be loaded in the CLI package and passed down to functions and workflow modules as
+  explicit arguments.
 - **No On-The-Fly Config Instantiations**: Do NOT instantiate default configuration objects on the fly in
   business logic (e.g. `gcp_config or GCPConfig()`). All configuration parameters are mandatory; domain logic and
   worker functions must require concrete, validated configuration models. Missing or invalid configurations MUST
-  raise an explicit `ValueError` at boundary entry points (`cli.py` or workflow `run()`).
+  raise an explicit `ValueError` at boundary entry points (the CLI package or workflow `run()`).
 - **Strict Boundary Parameter Normalization**: Domain logic functions MUST accept a single, well-typed input format.
   Do NOT add representation handling, multi-type parameter conversion, or payload normalization (`Union[dict, str, BaseModel]`)
   inside core business logic or worker functions. All raw parameter parsing (e.g. CLI JSON string deserialization)
-  MUST happen at the system boundary in `cli.py` before calling internal domain APIs.
+  MUST happen at the system boundary in the CLI package before calling internal domain APIs.
+
+## Coding and Architectural Quality
+
+These rules defend against the recurring smells found in this codebase: hand-rolled implementations of solved
+problems, defensive dynamic checks that mask type holes, local edits that duplicate or diverge, and modules that
+grow past their conceptual boundary.
+
+### Prefer libraries and stdlib over custom implementations
+
+Before writing a parser, retry loop, streaming combinator, or data-structure helper, check whether a maintained
+library or the standard library already solves it.
+
+- DO use `tenacity` for retries; configure `AsyncRetrying` once in `utils/retry.py`.
+- DO use `aiostream` / `itertools` / `collections` instead of one-off inline generators.
+- DO use `pytimeparse2`, `langcodes`, or `pydantic` for their respective domains.
+- DO NOT hand-roll exponential backoff, JSON duration parsing, or language-code mapping unless the existing
+  wrapper is provably insufficient.
+- DO NOT create a new `utils/` module for a single function that an existing library provides.
+
+Example:
+
+```python
+# BAD: custom retry loop with manual sleep and backoff
+for attempt in range(1, retries + 1):
+    try:
+        return await fn()
+    except Exception as e:
+        if attempt == retries:
+            raise
+        await asyncio.sleep(delay)
+        delay *= backoff
+
+# GOOD: tenacity configured in one place
+async for attempt in AsyncRetrying(
+    stop=stop_after_attempt(retries),
+    wait=wait_exponential_jitter(initial=delay, exp_base=backoff),
+    retry=retry_if_exception(is_transient),
+    reraise=True,
+):
+    with attempt:
+        return await fn()
+```
+
+### Type the boundary, do not defend against it with dynamic checks
+
+When an external client or API returns `Any`, add a typed wrapper or coercion at the boundary. Callers should use
+typed attributes, not `isinstance(..., dict)` fallbacks or `getattr(..., None)` guards.
+
+- DO add typed resource wrappers for external clients (e.g. `RetryingNotebookLMClient.notebooks: NotebooksAPI`).
+- DO model metadata dictionaries with `TypedDict` when the keys are known.
+- DO coerce ambiguous responses to Pydantic models or `TypedDict` at the client boundary.
+- DO NOT introduce `client_any: Any = client` aliases to silence type checkers.
+- DO NOT scatter `isinstance(response, dict)` / `getattr(obj, "field", None)` across business logic.
+
+Example:
+
+```python
+# BAD: defensive getattr because the client is untyped
+topic_summary = getattr(guide, "summary", None)
+
+# GOOD: client boundary is typed, so callers use attributes directly
+topic_summary = guide.summary or source.title
+```
+
+### Restructure files by semantic concept
+
+A module should own one idea. When a file exceeds ~400 lines, mixes unrelated concerns, or accumulates helpers
+that belong elsewhere, split it. Do not append unrelated code because "it is only a few lines."
+
+- DO split an oversized `cli.py` into `src/podcaster/cli/<domain>.py` modules.
+- DO move shared input helpers (`stream_stdin`, `parse_input_stream`) to `cli/input.py`.
+- DO keep importers, scrapers, workflow plugins, and CLI commands in their own modules.
+- DO NOT add a new command group to a 700-line file.
+- DO NOT mix CLI parsing, business logic, and workflow orchestration in one module.
+
+### Avoid local edits that create duplication or divergence
+
+Before fixing a single call site, search the codebase for the same pattern. Apply the fix once, in the right
+place, and update all call sites.
+
+- DO search for `client_any`, `isinstance.*dict`, and `getattr.*summary` before choosing a fix.
+- DO extract shared helpers when three or more call sites need the same normalization.
+- DO update all call sites when changing an interface or adding a typed wrapper.
+- DO NOT copy-paste a fix into one caller while leaving the equivalent branch in another module.
+- DO NOT rename one copy of a duplicated helper and leave the old alias behind.
+
+### Keep business logic pure and boundary-aware
+
+Configuration loading and raw-input parsing happen at the boundary. Pass concrete, validated models inward. Core
+functions should be small, typed, and free of I/O and config-loading concerns.
+
+- DO load `AppConfig` in the CLI package and pass `NotebookLMConfig` / `GCPConfig` down to workers.
+- DO validate and parse JSON strings at the CLI boundary.
+- DO keep workflow steps small enough to name clearly.
+- DO NOT call `load_config()` inside a utility function or workflow step.
+- DO NOT accept `Union[dict, str, BaseModel]` in domain logic.
+
+### Use explicit types for collections and metadata
+
+Replace `Dict[str, Any]`, `List[Any]`, and bare `Optional` with specific types. Metadata with known structure
+should be a `TypedDict` or Pydantic model, not an open-ended dict.
+
+- DO use `PodcastArtifactMetadata` TypedDict for task and artifact metadata.
+- DO annotate public functions like `set_mp4_tags` and `tag_file`.
+- DO return `list[str]` instead of `list`.
+- DO NOT leave `metadata: Dict[str, Any]` when the keys are stable and known.
+
+### Delete before adding
+
+When something is wrong, remove the offending code rather than adding a workaround on top. Dead code, unused
+imports, and obsolete aliases must be deleted, not commented out or kept for "just in case."
+
+- DO remove unused imports and dead aliases (`_terminate_process = terminate_process`).
+- DO delete helper functions that are no longer called.
+- DO trim `__all__` to stop exporting implementation details.
+- DO NOT keep deprecated aliases "in case someone is using them" without checking.
 
 ## Workflows and Distribution
 

@@ -166,8 +166,10 @@ async def test_workflow_run_normalizes_languages(tmp_path, dbos_session):
             TaggingConfig,
             TranscribeConfig,
         )
+        from podcaster.workflows.common import WorkflowEnvironment
         from podcaster.workflows.deep_dive_article.config import DeepDiveArticleConfig
         from podcaster.workflows.deep_dive_article.workflow import (
+            DeepDiveArticleOverrides,
             deep_dive_article_workflow,
         )
 
@@ -185,11 +187,13 @@ async def test_workflow_run_normalizes_languages(tmp_path, dbos_session):
             distribute=[],
         )
 
-        await deep_dive_article_workflow(
-            preset_name="default",
-            wf_config=wf_config,
+        env = WorkflowEnvironment(
             workdir=str(tmp_path),
             workflow_id="wf_test_norm",
+            notebooklm_config=NotebookLMConfig(),
+            gcp_config=None,
+        )
+        overrides = DeepDiveArticleOverrides(
             title="Test Title",
             source_url="test.pdf",
             notebook_id=None,
@@ -198,8 +202,13 @@ async def test_workflow_run_normalizes_languages(tmp_path, dbos_session):
             enrich_web=False,
             generate_cover=False,
             transcribe=False,
-            gcp_config=None,
-            notebooklm_config=NotebookLMConfig(),
+        )
+
+        await deep_dive_article_workflow(
+            preset_name="default",
+            wf_config=wf_config,
+            env=env,
+            overrides=overrides,
         )
 
         # Check that create_podcast_audio_jobs received lowercased languages

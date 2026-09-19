@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from abc import ABC, abstractmethod
-from typing import List, Optional
+from collections.abc import Callable
 
 from ..config import (
     DistributionConfig,
@@ -15,16 +15,16 @@ logger = logging.getLogger(__name__)
 class Distribution(ABC):
     """Abstract base class for distribution mechanisms."""
 
-    name: Optional[str]
+    name: str | None
 
-    def __init__(self, notifiers: Optional[List[Notifier]] = None):
-        self.notifiers: List[Notifier] = notifiers or []
+    def __init__(self, notifiers: list[Notifier] | None = None):
+        self.notifiers: list[Notifier] = notifiers or []
 
     @abstractmethod
     async def _distribute(
         self,
         working_dir: str,
-        metadata: Optional[dict] = None,
+        metadata: dict | None = None,
     ) -> dict:
         """Executes the specific distribution operation for a given working directory."""
         ...
@@ -32,7 +32,7 @@ class Distribution(ABC):
     async def distribute(
         self,
         working_dir: str,
-        metadata: Optional[dict] = None,
+        metadata: dict | None = None,
     ) -> dict:
         """Executes the distribution operation and runs attached notifiers concurrently."""
         result = await self._distribute(working_dir=working_dir, metadata=metadata)
@@ -63,39 +63,45 @@ class Distribution(ABC):
         return result
 
 
+DistributionFactory = Callable[
+    [DistributionConfig, str | None, list[Notifier]], Distribution
+]
+_DISTRIBUTION_REGISTRY: dict[str, DistributionFactory] = {}
+
+
+def register_distribution(key: str, factory: DistributionFactory) -> None:
+    """Register a distribution builder for a configuration key."""
+    _DISTRIBUTION_REGISTRY[key] = factory
+
+
+def _ensure_default_distributions_registered() -> None:
+    if not _DISTRIBUTION_REGISTRY:
+        from . import rsync  # noqa: F401
+
+
 def build_distribution(
     dist_cfg: DistributionConfig,
-    name: Optional[str] = None,
+    name: str | None = None,
 ) -> Distribution:
-    """Constructs a concrete Distribution (e.g. RsyncDistribution)
-    from a resolved DistributionConfig.
-    """
-    from .rsync import RsyncDistribution
+    """Constructs a concrete Distribution from a resolved DistributionConfig."""
+    _ensure_default_distributions_registered()
 
     name = name or getattr(dist_cfg, "_ref_name", None)
     built_notifiers = [
         build_notifier(n) for n in dist_cfg.notifiers if isinstance(n, NotifierConfig)
     ]
 
-    if dist_cfg.rsync is not None:
-        return RsyncDistribution(
-            destination=dist_cfg.rsync.destination or "",
-            method=dist_cfg.rsync.method or "rsync",
-            flags=dist_cfg.rsync.flags,
-            filename_template=dist_cfg.rsync.filename_template,
-            notifiers=built_notifiers,
-            name=name,
-        )
-    else:
-        raise ValueError(
-            f"Could not construct Distribution from configuration: {dist_cfg}"
-        )
+    for key, factory in _DISTRIBUTION_REGISTRY.items():
+        if getattr(dist_cfg, key, None) is not None:
+            return factory(dist_cfg, name, built_notifiers)
+
+    raise ValueError(f"Could not construct Distribution from configuration: {dist_cfg}")
 
 
 async def execute_distribution(
     dist_input: DistributionConfig,
     working_dir: str,
-    metadata: Optional[dict] = None,
+    metadata: dict | None = None,
 ) -> dict:
     """Executes a distribution for a given working directory."""
     dist_obj = build_distribution(dist_input)

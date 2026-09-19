@@ -9,8 +9,9 @@ from podcaster.config import AppConfig
 from podcaster.utils.cli import async_command, verbose_option
 from podcaster.utils.dbos import shutdown_dbos, wait_for_workflow_result
 
+from ..common import WorkflowEnvironment
 from .config import DeepDiveArticleConfig
-from .workflow import deep_dive_article_workflow
+from .workflow import DeepDiveArticleOverrides, deep_dive_article_workflow
 
 
 def create_command(
@@ -83,23 +84,30 @@ def create_command(
         wf_id = workflow_id or f"wf_{uuid.uuid4().hex[:12]}"
         lang_list = [lang.lower() for lang in language] if language else None
 
+        env = WorkflowEnvironment(
+            workdir=workdir,
+            workflow_id=wf_id,
+            notebooklm_config=app_config.notebooklm,
+            gcp_config=app_config.gcp,
+        )
+        overrides = DeepDiveArticleOverrides(
+            title=title,
+            source_url=source_url,
+            notebook_id=None,
+            length=length,
+            languages=lang_list,
+            enrich_web=enrich_web,
+            generate_cover=generate_cover,
+            transcribe=transcribe,
+        )
+
         try:
             handle = dbos.DBOS.start_workflow(
                 deep_dive_article_workflow,
                 preset_name=preset_name,
                 wf_config=workflow_config,
-                workdir=workdir,
-                workflow_id=wf_id,
-                title=title,
-                source_url=source_url,
-                notebook_id=None,
-                length=length,
-                languages=lang_list,
-                enrich_web=enrich_web,
-                generate_cover=generate_cover,
-                transcribe=transcribe,
-                gcp_config=app_config.gcp,
-                notebooklm_config=app_config.notebooklm,
+                env=env,
+                overrides=overrides,
             )
             return await wait_for_workflow_result(handle.workflow_id)
         finally:

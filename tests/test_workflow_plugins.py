@@ -49,7 +49,9 @@ def test_workflow_plugin_declares_its_config_type_and_command_factory():
     ).presets.root["daily"]
 
     assert plugin.config_type is DeepDiveArticleConfig
-    assert plugin.command_factory("daily", _app_config(), workflow_config).name == "daily"
+    assert (
+        plugin.command_factory("daily", _app_config(), workflow_config).name == "daily"
+    )
 
 
 def test_workflow_config_uses_the_plugin_declared_configuration_type():
@@ -60,13 +62,42 @@ def test_workflow_config_uses_the_plugin_declared_configuration_type():
     assert isinstance(config.presets.root["daily"], DeepDiveArticleConfig)
 
 
+def _topic_workflow_config() -> dict:
+    return {
+        "type": "topic_workflow",
+        "podcast_generator": {},
+        "enrich_web": {},
+        "generate_cover": {},
+        "transcribe": {"podcast_transcriber": {}},
+        "tagging": {"spec": {}},
+        "distribute": [],
+    }
+
+
+def test_topic_workflow_plugin_declares_its_config_type_and_command_factory():
+    from podcaster.workflows.topic_workflow.config import TopicWorkflowConfig
+
+    plugin = discover_workflow_plugins()["topic_workflow"]
+    workflow_config = WorkflowConfig.model_validate(
+        {"presets": {"topic_daily": _topic_workflow_config()}}
+    ).presets.root["topic_daily"]
+
+    assert plugin.config_type is TopicWorkflowConfig
+    assert (
+        plugin.command_factory("topic_daily", _app_config(), workflow_config).name
+        == "topic_daily"
+    )
+
+
 def test_workflow_framework_initializes_dbos_and_passes_loaded_configs(monkeypatch):
     workflow_config = WorkflowConfig.model_validate(
         {"presets": {"daily": _deep_dive_workflow_config()}}
     ).presets.root["daily"]
     dbos_config = object()
     config = SimpleNamespace(
-        workflow=SimpleNamespace(presets=SimpleNamespace(root={"daily": workflow_config})),
+        workflow=SimpleNamespace(
+            presets=SimpleNamespace(root={"daily": workflow_config})
+        ),
         dbos=dbos_config,
     )
     received = []
@@ -80,8 +111,11 @@ def test_workflow_framework_initializes_dbos_and_passes_loaded_configs(monkeypat
         )
 
     plugin = SimpleNamespace(command_factory=create_command)
-    monkeypatch.setattr("podcaster.cli.load_config", lambda: config)
-    monkeypatch.setattr("podcaster.cli.ensure_dbos_initialized", lambda value: received.append(value))
+    monkeypatch.setattr("podcaster.cli.workflow.load_config", lambda: config)
+    monkeypatch.setattr(
+        "podcaster.cli.workflow.ensure_dbos_initialized",
+        lambda value: received.append(value),
+    )
     monkeypatch.setattr("podcaster.workflows.get_workflow_plugin", lambda _: plugin)
 
     result = CliRunner().invoke(cli, ["workflow", "run", "daily"])
@@ -99,7 +133,9 @@ def test_workflow_framework_does_not_initialize_dbos_for_command_help(monkeypatc
         {"presets": {"daily": _deep_dive_workflow_config()}}
     ).presets.root["daily"]
     config = SimpleNamespace(
-        workflow=SimpleNamespace(presets=SimpleNamespace(root={"daily": workflow_config})),
+        workflow=SimpleNamespace(
+            presets=SimpleNamespace(root={"daily": workflow_config})
+        ),
         dbos=object(),
     )
     initialized = []
@@ -108,9 +144,10 @@ def test_workflow_framework_does_not_initialize_dbos_for_command_help(monkeypatc
             name, callback=lambda: None
         )
     )
-    monkeypatch.setattr("podcaster.cli.load_config", lambda: config)
+    monkeypatch.setattr("podcaster.cli.workflow.load_config", lambda: config)
     monkeypatch.setattr(
-        "podcaster.cli.ensure_dbos_initialized", lambda value: initialized.append(value)
+        "podcaster.cli.workflow.ensure_dbos_initialized",
+        lambda value: initialized.append(value),
     )
     monkeypatch.setattr("podcaster.workflows.get_workflow_plugin", lambda _: plugin)
 

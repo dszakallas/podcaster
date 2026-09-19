@@ -1,8 +1,8 @@
 import asyncio
 import logging
 import os
-import time
-from typing import Any, AsyncGenerator, AsyncIterable, Callable, Optional
+from collections.abc import AsyncGenerator, AsyncIterable, Callable
+from typing import Any
 
 from google import genai
 from google.genai import types
@@ -10,8 +10,9 @@ from notebooklm.exceptions import NotebookNotFoundError
 from PIL import Image
 
 from .models import CoverTask, TaskStatus
+from .utils import PollingJob, PollStatus, async_iter
 from .utils.notebooklm import RetryingNotebookLMClient
-from .utils.retry import is_transient_network_exception, retry_rpc
+from .utils.retry import retry_rpc
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +31,7 @@ async def create_cover_job(
     notebook_id: str,
     notebooklm_client: RetryingNotebookLMClient,
     model: str,
-    image_gen_prompt: Optional[str] = None,
+    image_gen_prompt: str | None = None,
 ) -> CoverTask:
     try:
         notebook = await notebooklm_client.notebooks.get(notebook_id)
@@ -83,52 +84,28 @@ async def poll_cover_jobs(
     tasks: AsyncIterable[CoverTask],
 ) -> AsyncGenerator[CoverTask, None]:
     genai_client = genai.Client().aio
-    async for t in tasks:
-        task_id = t.task_id
-        logger.debug(f"Polling batch job: {task_id}")
-        started_at = time.time()
-        while True:
-            try:
-                job: Any = await retry_rpc(
-                    genai_client.batches.get, name=task_id, logger=logger
-                )
-                state_str = str(job.state)
-                if "SUCCEEDED" in state_str:
-                    yield t.model_copy(update={"status": TaskStatus.COMPLETED})
-                    break
-                elif "FAILED" in state_str or "CANCELLED" in state_str:
-                    error_msg = str(job.error) if job.error else "Job failed/cancelled"
-                    yield t.model_copy(
-                        update={"status": TaskStatus.FAILED, "error": error_msg}
-                    )
-                    break
-            except Exception as e:
-                if not is_transient_network_exception(e):
-                    logger.error(
-                        f"Non-retryable error polling cover job {task_id}: {e}"
-                    )
-                    yield t.model_copy(
-                        update={"status": TaskStatus.FAILED, "error": str(e)}
-                    )
-                    break
-                logger.warning(
-                    f"Transient network error polling cover job {task_id}: {e}"
-                )
 
-            elapsed = time.time() - started_at
-            if elapsed > MAX_POLL_TIMEOUT_SECONDS:
-                logger.error(
-                    f"Polling cover task {task_id} timed out after {elapsed:.1f}s"
-                )
-                yield t.model_copy(
-                    update={
-                        "status": TaskStatus.FAILED,
-                        "error": f"Cover task {task_id} timed out after {elapsed:.1f}s",
-                    }
-                )
-                break
+    async def check_status(t: CoverTask) -> PollStatus:
+        logger.debug(f"Polling batch job: {t.task_id}")
+        job: Any = await retry_rpc(
+            genai_client.batches.get, name=t.task_id, logger=logger
+        )
+        state_str = str(job.state)
+        if "SUCCEEDED" in state_str:
+            return PollStatus(status=TaskStatus.COMPLETED)
+        elif "FAILED" in state_str or "CANCELLED" in state_str:
+            error_msg = str(job.error) if job.error else "Job failed/cancelled"
+            return PollStatus(status=TaskStatus.FAILED, error=error_msg)
+        return PollStatus(status=TaskStatus.IN_PROGRESS)
 
-            await asyncio.sleep(POLL_INTERVAL_SECONDS)
+    polling_job = PollingJob(
+        check_status=check_status,
+        timeout=MAX_POLL_TIMEOUT_SECONDS,
+        interval=POLL_INTERVAL_SECONDS,
+        sleep=asyncio.sleep,
+    )
+    async for t in polling_job.poll_stream(tasks):
+        yield t
 
 
 async def download_cover_jobs(
@@ -183,9 +160,9 @@ async def generate_cover_for_notebook(
     working_dir: str,
     notebooklm_client: RetryingNotebookLMClient,
     model: str,
-    task_id: Optional[str] = None,
-    image_gen_prompt: Optional[str] = None,
-    on_start_callback: Optional[Callable[[str, str], Any]] = None,
+    task_id: str | None = None,
+    image_gen_prompt: str | None = None,
+    on_start_callback: Callable[[str, str], Any] | None = None,
 ) -> str:
 
     # 1. Start cover job if not provided
@@ -214,11 +191,8 @@ async def generate_cover_for_notebook(
     )
 
     # 2. Poll cover job
-    async def task_gen():
-        yield task_obj
-
     completed_task = None
-    async for t in poll_cover_jobs(task_gen()):
+    async for t in poll_cover_jobs(async_iter(task_obj)):
         completed_task = t
 
     if not completed_task or completed_task.status != TaskStatus.COMPLETED:
@@ -227,11 +201,8 @@ async def generate_cover_for_notebook(
         )
 
     # 3. Download cover result
-    async def completed_gen():
-        yield completed_task
-
     downloaded = None
-    async for d in download_cover_jobs(completed_gen(), working_dir):
+    async for d in download_cover_jobs(async_iter(completed_task), working_dir):
         downloaded = d
 
     if not downloaded or not downloaded.cover_path:

@@ -72,8 +72,8 @@ Instructions:
    - Default "mode" to "fast" unless the user explicitly requests deep, extensive, or comprehensive research.
 6. JSON Validity:
    - ALL string values MUST be strictly valid JSON strings.
-   - Do NOT copy backslash sequences (e.g. \$, \%, \&) from the user's prompt into JSON string values. Write the literal character instead (e.g. "$" not "\$").
-   - The only valid JSON escape sequences inside strings are: \", \\, \/, \b, \f, \n, \r, \t, \uXXXX.
+   - Do NOT copy backslash sequences (e.g. \\$, \\%, \\&) from the user's prompt into JSON string values. Write the literal character instead (e.g. "$" not "\\$").
+   - The only valid JSON escape sequences inside strings are: \\", \\\\, \\/, \\b, \\f, \\n, \\r, \\t, \\uXXXX.
 
 Respond ONLY with the JSON object. Do not include markdown code fences, comments, or introductory text."""
 

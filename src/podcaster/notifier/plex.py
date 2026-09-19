@@ -1,20 +1,20 @@
 import logging
 import os
-from typing import Optional, Union
+from typing import Any
 
 import httpx
 
-from .base import Notifier
+from .base import Notifier, register_notifier
 
 logger = logging.getLogger(__name__)
 
 
 async def sync_to_plex(
     working_dir: str,
-    plex_section_id: Union[int, str],
-    plex_server_url: Optional[str] = None,
-    plex_token: Optional[str] = None,
-    server_library_path: Optional[str] = None,
+    plex_section_id: int | str,
+    plex_server_url: str | None = None,
+    plex_token: str | None = None,
+    server_library_path: str | None = None,
 ) -> dict:
 
     if not os.path.exists(working_dir):
@@ -63,11 +63,11 @@ class PlexNotifier(Notifier):
 
     def __init__(
         self,
-        section_id: Union[int, str],
-        server_library_path: Optional[str] = None,
-        server_url: Optional[str] = None,
-        token: Optional[str] = None,
-        name: Optional[str] = None,
+        section_id: int | str,
+        server_library_path: str | None = None,
+        server_url: str | None = None,
+        token: str | None = None,
+        name: str | None = None,
     ):
         self.section_id = section_id
         self.server_library_path = server_library_path
@@ -77,8 +77,8 @@ class PlexNotifier(Notifier):
 
     async def notify(
         self,
-        metadata: Optional[dict] = None,
-        dist_result: Optional[dict] = None,
+        metadata: dict | None = None,
+        dist_result: dict | None = None,
     ) -> dict:
         working_dir = (
             (dist_result.get("source") if dist_result else None)
@@ -92,3 +92,17 @@ class PlexNotifier(Notifier):
             plex_token=self.token,
             server_library_path=self.server_library_path,
         )
+
+
+def _build_plex_notifier(cfg: Any, name: str | None = None) -> Notifier:
+    assert cfg.plex is not None
+    return PlexNotifier(
+        section_id=cfg.plex.section_id,
+        server_library_path=cfg.plex.server_library_path,
+        server_url=cfg.plex.server_url,
+        token=cfg.plex.token,
+        name=name,
+    )
+
+
+register_notifier("plex", _build_plex_notifier)

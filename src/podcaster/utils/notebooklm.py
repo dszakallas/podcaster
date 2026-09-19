@@ -4,7 +4,14 @@ import contextlib
 import functools
 import logging
 import os
-from typing import Any, AsyncGenerator
+from collections.abc import AsyncGenerator
+from typing import Any, Literal, cast, overload
+
+from notebooklm._artifacts import ArtifactsAPI
+from notebooklm._chat import ChatAPI
+from notebooklm._notebooks import NotebooksAPI
+from notebooklm._research import ResearchAPI
+from notebooklm._sources import SourcesAPI
 
 from ..config import NotebookLMConfig
 from .retry import retry_rpc
@@ -70,11 +77,11 @@ class _RetryingResourceWrapper:
 class RetryingNotebookLMClient:
     """NotebookLM client adapter that retries safe resource operations."""
 
-    notebooks: Any
-    sources: Any
-    artifacts: Any
-    research: Any
-    chat: Any
+    notebooks: NotebooksAPI
+    sources: SourcesAPI
+    artifacts: ArtifactsAPI
+    research: ResearchAPI
+    chat: ChatAPI
 
     @classmethod
     @contextlib.asynccontextmanager
@@ -95,7 +102,44 @@ class RetryingNotebookLMClient:
     def __init__(self, client: Any, logger: logging.Logger | None = None):
         self._client = client
         self._logger = logger or logging.getLogger("notebooklm.client")
+        if hasattr(client, "notebooks"):
+            self.notebooks = cast(
+                NotebooksAPI,
+                _RetryingResourceWrapper(client.notebooks, logger=self._logger),
+            )
+        if hasattr(client, "sources"):
+            self.sources = cast(
+                SourcesAPI,
+                _RetryingResourceWrapper(client.sources, logger=self._logger),
+            )
+        if hasattr(client, "artifacts"):
+            self.artifacts = cast(
+                ArtifactsAPI,
+                _RetryingResourceWrapper(client.artifacts, logger=self._logger),
+            )
+        if hasattr(client, "research"):
+            self.research = cast(
+                ResearchAPI,
+                _RetryingResourceWrapper(client.research, logger=self._logger),
+            )
+        if hasattr(client, "chat"):
+            self.chat = cast(
+                ChatAPI,
+                _RetryingResourceWrapper(client.chat, logger=self._logger),
+            )
 
+    @overload
+    def __getattr__(self, name: Literal["notebooks"]) -> NotebooksAPI: ...
+    @overload
+    def __getattr__(self, name: Literal["sources"]) -> SourcesAPI: ...
+    @overload
+    def __getattr__(self, name: Literal["artifacts"]) -> ArtifactsAPI: ...
+    @overload
+    def __getattr__(self, name: Literal["research"]) -> ResearchAPI: ...
+    @overload
+    def __getattr__(self, name: Literal["chat"]) -> ChatAPI: ...
+    @overload
+    def __getattr__(self, name: str) -> Any: ...
     def __getattr__(self, name: str) -> Any:
         attribute = getattr(self._client, name)
         if name in ("notebooks", "sources", "artifacts", "research", "chat"):
@@ -123,7 +167,7 @@ async def get_notebooklm_client(
     config: NotebookLMConfig,
     timeout: float = DEFAULT_CLIENT_TIMEOUT,
     logger: logging.Logger | None = None,
-):
+) -> AsyncGenerator[RetryingNotebookLMClient, None]:
     """Create and close a retrying NotebookLM client."""
     async with RetryingNotebookLMClient.from_storage(
         _get_storage_path(config), timeout=timeout, logger=logger

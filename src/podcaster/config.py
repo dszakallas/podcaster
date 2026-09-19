@@ -1,14 +1,13 @@
+import contextlib
 import os
 import re
+import types
+from collections.abc import Callable
 from typing import (
     Annotated,
     Any,
-    Dict,
     ForwardRef,
-    Generic,
-    List,
     Literal,
-    Optional,
     TypeVar,
     Union,
     get_args,
@@ -33,9 +32,9 @@ def _reconstruct_ref(data: dict) -> "Ref[Any]":
     return Ref(**data)
 
 
-class Ref(BaseModel, Generic[T]):
+class Ref[T](BaseModel):
     model_config = ConfigDict(extra="allow")
-    ref: Optional[str] = None
+    ref: str | None = None
 
     def __reduce__(self):
         data = {"ref": self.ref}
@@ -123,12 +122,14 @@ class Ref(BaseModel, Generic[T]):
         )
 
 
-MaybeRef = Union[Ref[T], T]
+MaybeRef = Ref[T] | T
 
 
 class PodcastGenerationConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    languages: List[str] = Field(default_factory=lambda: ["en"])
+    task: str = "main-article-with-author"
+    format_args: dict[str, Any] = Field(default_factory=dict)
+    languages: list[str] = Field(default_factory=lambda: ["en"])
     length: Literal["short", "default", "long", "auto"] = "default"
     ignore_errors: bool = False
 
@@ -136,14 +137,14 @@ class PodcastGenerationConfig(BaseModel):
 class PodcastTagsConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     album_artist: str = "Your Name"
-    artists: List[str] = Field(default_factory=lambda: ["Your Name"])
+    artists: list[str] = Field(default_factory=lambda: ["Your Name"])
 
 
 class EnrichWebSpecConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     mode: Literal["fast", "deep"] = "fast"
-    fallback_importer: Optional[MaybeRef["ImporterConfig"]] = None
-    max_import_failures: Optional[int] = None
+    fallback_importer: MaybeRef["ImporterConfig"] | None = None
+    max_import_failures: int | None = None
 
 
 class NativeImporterConfig(BaseModel):
@@ -153,28 +154,28 @@ class NativeImporterConfig(BaseModel):
 class AgentConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     command: str
-    args: List[str] = Field(default_factory=list)
-    timeout: Optional[float] = Field(default=None, gt=0)
+    args: list[str] = Field(default_factory=list)
+    timeout: float | None = Field(default=None, gt=0)
 
 
 class ScraperConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     tool: str = "playwright"
     agent: MaybeRef[AgentConfig]
-    timeout: Optional[float] = Field(default=None, gt=0)
+    timeout: float | None = Field(default=None, gt=0)
 
 
 class ChainImporterConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    importers: List[MaybeRef["ImporterConfig"]] = Field(default_factory=list)
+    importers: list[MaybeRef["ImporterConfig"]] = Field(default_factory=list)
 
 
 class ImporterConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    match: List[str] = Field(default_factory=lambda: [".*"])
-    native: Optional[NativeImporterConfig] = None
-    scraper: Optional[MaybeRef[ScraperConfig]] = None
-    chain: Optional[ChainImporterConfig] = None
+    match: list[str] = Field(default_factory=lambda: [".*"])
+    native: NativeImporterConfig | None = None
+    scraper: MaybeRef[ScraperConfig] | None = None
+    chain: ChainImporterConfig | None = None
 
 
 class EnrichWebConfig(BaseModel):
@@ -202,7 +203,7 @@ class GenerateCoverConfig(BaseModel):
 class PodcastTranscriptionConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     speed_factor: float = 1.5
-    languages: List[str] = Field(default_factory=lambda: [])
+    languages: list[str] = Field(default_factory=lambda: [])
 
 
 class TranscribeConfig(BaseModel):
@@ -216,7 +217,7 @@ class RsyncDistributionConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     method: Literal["rsync", "rclone"] = "rsync"
     destination: str
-    flags: List[str] = Field(default_factory=list)
+    flags: list[str] = Field(default_factory=list)
     filename_template: str = (
         "{{ notebook.creation_date }} - {{ notebook.title }} [nlm_{{ notebook.id }}]"
         "/{{ artifact.name }} [{{ artifact.id }}]"
@@ -225,40 +226,36 @@ class RsyncDistributionConfig(BaseModel):
 
 class PlexNotifierConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    section_id: Union[int, str]
+    section_id: int | str
     server_library_path: Annotated[
-        Optional[str], Field(json_schema_extra={"env_var": True})
+        str | None, Field(json_schema_extra={"env_var": True})
     ] = None
-    server_url: Annotated[Optional[str], Field(json_schema_extra={"env_var": True})] = (
-        None
-    )
-    token: Annotated[Optional[str], Field(json_schema_extra={"env_var": True})] = None
+    server_url: Annotated[str | None, Field(json_schema_extra={"env_var": True})] = None
+    token: Annotated[str | None, Field(json_schema_extra={"env_var": True})] = None
 
 
 class DiscordNotifierConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    webhook_url: Annotated[
-        Optional[str], Field(json_schema_extra={"env_var": True})
-    ] = None
-    bot_token: Annotated[Optional[str], Field(json_schema_extra={"env_var": True})] = (
+    webhook_url: Annotated[str | None, Field(json_schema_extra={"env_var": True})] = (
         None
     )
+    bot_token: Annotated[str | None, Field(json_schema_extra={"env_var": True})] = None
     channel_id: Annotated[
-        Optional[Union[int, str]],
+        int | str | None,
         Field(json_schema_extra={"env_var": True}),
     ] = None
 
 
 class NotifierConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    plex: Optional[PlexNotifierConfig] = None
-    discord: Optional[DiscordNotifierConfig] = None
+    plex: PlexNotifierConfig | None = None
+    discord: DiscordNotifierConfig | None = None
 
 
 class DistributionConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    rsync: Optional[RsyncDistributionConfig] = None
-    notifiers: List[MaybeRef[NotifierConfig]] = Field(default_factory=list)
+    rsync: RsyncDistributionConfig | None = None
+    notifiers: list[MaybeRef[NotifierConfig]] = Field(default_factory=list)
 
 
 class TaggingConfig(BaseModel):
@@ -267,7 +264,28 @@ class TaggingConfig(BaseModel):
     spec: MaybeRef[PodcastTagsConfig]
 
 
-class WorkflowPresetsConfig(RootModel[Dict[str, BaseModel]]):
+WorkflowConfigParser = Callable[[str, dict[str, Any]], BaseModel]
+_WORKFLOW_CONFIG_PARSER: WorkflowConfigParser | None = None
+
+
+def set_workflow_config_parser(parser: WorkflowConfigParser | None) -> None:
+    """Register or override the workflow configuration parser."""
+    global _WORKFLOW_CONFIG_PARSER
+    _WORKFLOW_CONFIG_PARSER = parser
+
+
+def _default_workflow_config_parser(
+    workflow_type: str, raw_config: dict[str, Any]
+) -> BaseModel:
+    from podcaster.workflows import get_workflow_plugin
+
+    plugin = get_workflow_plugin(workflow_type)
+    if plugin is None:
+        raise ValueError(f"Unknown workflow type '{workflow_type}'.")
+    return plugin.config_type.model_validate(raw_config)
+
+
+class WorkflowPresetsConfig(RootModel[dict[str, BaseModel]]):
     """Workflow presets parsed by their declared workflow plugin."""
 
     @model_validator(mode="before")
@@ -276,7 +294,7 @@ class WorkflowPresetsConfig(RootModel[Dict[str, BaseModel]]):
         if not isinstance(data, dict):
             return data
 
-        from podcaster.workflows import get_workflow_plugin
+        parser = _WORKFLOW_CONFIG_PARSER or _default_workflow_config_parser
 
         parsed: dict[str, BaseModel] = {}
         for preset_name, raw_config in data.items():
@@ -293,12 +311,12 @@ class WorkflowPresetsConfig(RootModel[Dict[str, BaseModel]]):
                     f"Workflow preset '{preset_name}' must declare a string 'type'."
                 )
 
-            plugin = get_workflow_plugin(workflow_type)
-            if plugin is None:
+            try:
+                parsed[preset_name] = parser(workflow_type, raw_config)
+            except ValueError as e:
                 raise ValueError(
                     f"Unknown workflow type '{workflow_type}' for preset '{preset_name}'."
-                )
-            parsed[preset_name] = plugin.config_type.model_validate(raw_config)
+                ) from e
 
         return parsed
 
@@ -313,41 +331,41 @@ class WorkflowConfig(BaseModel):
 
 class GCPConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    project_id: Optional[str] = None
+    project_id: str | None = None
     location: str = "us-central1"
-    gcs_bucket: Optional[str] = None
+    gcs_bucket: str | None = None
 
 
 class DBOSConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     engine: str = "sqlite"
     sqlite_path: str = "~/.podcaster/dbos.db"
-    postgres_url: Optional[str] = None
+    postgres_url: str | None = None
 
 
 class NotebookLMConfig(BaseModel):
     """Optional settings used to locate a NotebookLM browser profile."""
 
     model_config = ConfigDict(extra="forbid")
-    home: Annotated[Optional[str], Field(json_schema_extra={"env_var": True})] = None
-    storage_state: Annotated[
-        Optional[str], Field(json_schema_extra={"env_var": True})
-    ] = None
-    profile: Annotated[Optional[str], Field(json_schema_extra={"env_var": True})] = None
+    home: Annotated[str | None, Field(json_schema_extra={"env_var": True})] = None
+    storage_state: Annotated[str | None, Field(json_schema_extra={"env_var": True})] = (
+        None
+    )
+    profile: Annotated[str | None, Field(json_schema_extra={"env_var": True})] = None
 
 
 class AppConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     dbos: DBOSConfig
-    scrapers: Dict[str, ScraperConfig]
-    agents: Dict[str, AgentConfig]
-    podcast_generators: Dict[str, PodcastGenerationConfig]
-    podcast_transcribers: Dict[str, PodcastTranscriptionConfig]
-    importers: Dict[str, ImporterConfig]
-    podcast_tags: Dict[str, PodcastTagsConfig]
+    scrapers: dict[str, ScraperConfig]
+    agents: dict[str, AgentConfig]
+    podcast_generators: dict[str, PodcastGenerationConfig]
+    podcast_transcribers: dict[str, PodcastTranscriptionConfig]
+    importers: dict[str, ImporterConfig]
+    podcast_tags: dict[str, PodcastTagsConfig]
     workflow: WorkflowConfig
-    notifiers: Dict[str, NotifierConfig]
-    distributions: Dict[str, DistributionConfig]
+    notifiers: dict[str, NotifierConfig]
+    distributions: dict[str, DistributionConfig]
     gcp: GCPConfig
     notebooklm: NotebookLMConfig = Field(default_factory=NotebookLMConfig)
 
@@ -375,11 +393,32 @@ class RefResolver:
         return config
 
     @staticmethod
-    def _ref_target_name(annotation: Any) -> Optional[str]:
+    def _target_name_from_union(args: tuple[Any, ...]) -> str | None:
+        """Find the target type name from union arguments (for Ref[T] | T)."""
+        for arg in args:
+            if isinstance(arg, type) and issubclass(arg, Ref):
+                inner = get_args(arg)
+                if inner:
+                    t = inner[0]
+                    return t if isinstance(t, str) else getattr(t, "__name__", None)
+
+        for arg in args:
+            if arg is type(None) or (isinstance(arg, type) and issubclass(arg, Ref)):
+                continue
+            if isinstance(arg, ForwardRef):
+                return arg.__forward_arg__
+            if isinstance(arg, str):
+                return arg
+            if isinstance(arg, type):
+                return arg.__name__
+        return None
+
+    @classmethod
+    def _ref_target_name(cls, annotation: Any) -> str | None:
         """Extract the target type name from a field annotation containing Ref[T] or MaybeRef[T].
 
         Pydantic strips generic params from Ref during validation, so we can't rely
-        on Ref[T] having args. Instead, for Union types (MaybeRef = Union[Ref, T]),
+        on Ref[T] having args. Instead, for Union types (MaybeRef = Ref[T] | T),
         we look for the non-Ref, non-None member — that's the target type.
         """
         origin = get_origin(annotation)
@@ -393,32 +432,13 @@ class RefResolver:
             return None
 
         # Union (covers Optional, MaybeRef)
-        if origin is Union:
-            # First try: find Ref[T] with generic args
-            for arg in args:
-                if isinstance(arg, type) and issubclass(arg, Ref):
-                    inner = get_args(arg)
-                    if inner:
-                        t = inner[0]
-                        return t if isinstance(t, str) else getattr(t, "__name__", None)
-            # Fallback: the non-Ref, non-None type in the union is the target
-            for arg in args:
-                if arg is type(None):
-                    continue
-                if isinstance(arg, type) and issubclass(arg, Ref):
-                    continue
-                if isinstance(arg, ForwardRef):
-                    return arg.__forward_arg__
-                if isinstance(arg, str):
-                    return arg
-                if isinstance(arg, type):
-                    return arg.__name__
-            return None
+        if origin in (Union, types.UnionType):
+            return cls._target_name_from_union(args)
 
         # List[X], Dict[K, X] — recurse into type args
         if args:
             for arg in args:
-                result = RefResolver._ref_target_name(arg)
+                result = cls._ref_target_name(arg)
                 if result:
                     return result
 
@@ -437,7 +457,7 @@ class RefResolver:
         root: BaseModel,
         cache: dict[int, Any],
         visited: set[str],
-        target_name: Optional[str] = None,
+        target_name: str | None = None,
     ) -> Any:
         cache_key = id(ref)
         if cache_key in cache:
@@ -493,6 +513,92 @@ class RefResolver:
 
         return target
 
+    def _resolve_list_field(
+        self,
+        items: list[Any],
+        root: BaseModel,
+        cache: dict[int, Any],
+        visited: set[str],
+        ref_target: str | None,
+    ) -> tuple[list[Any], bool]:
+        resolved_list: list[Any] = []
+        changed = False
+        for item in items:
+            if isinstance(item, Ref):
+                resolved_list.append(
+                    self._resolve_ref(
+                        item, root, cache, visited, target_name=ref_target
+                    )
+                )
+                changed = True
+            else:
+                resolved_list.append(item)
+                if isinstance(item, BaseModel):
+                    self._walk(item, root, cache, visited)
+        return resolved_list, changed
+
+    def _resolve_dict_field(
+        self,
+        items: dict[Any, Any],
+        root: BaseModel,
+        cache: dict[int, Any],
+        visited: set[str],
+        ref_target: str | None,
+        field_name: str | None = None,
+    ) -> tuple[dict[Any, Any], bool]:
+        resolved_dict: dict[Any, Any] = {}
+        changed = False
+        for k, v in items.items():
+            if isinstance(v, Ref):
+                resolved_dict[k] = self._resolve_ref(
+                    v, root, cache, visited, target_name=ref_target
+                )
+                changed = True
+            else:
+                resolved_dict[k] = v
+                if isinstance(v, BaseModel):
+                    if not hasattr(v, "_ref_name"):
+                        with contextlib.suppress(Exception):
+                            object.__setattr__(v, "_ref_name", str(k))
+                            if field_name:
+                                object.__setattr__(v, "_ref_path", f"{field_name}.{k}")
+                                object.__setattr__(v, "_config_registry", field_name)
+                    self._walk(v, root, cache, visited)
+        return resolved_dict, changed
+
+    def _walk_model(
+        self,
+        obj: BaseModel,
+        root: BaseModel,
+        cache: dict[int, Any],
+        visited: set[str],
+    ) -> None:
+        updates: dict[str, Any] = {}
+        for field_name in type(obj).model_fields:
+            val = getattr(obj, field_name)
+            annotation = type(obj).model_fields[field_name].annotation
+            ref_target = self._ref_target_name(annotation)
+            if isinstance(val, Ref):
+                updates[field_name] = self._resolve_ref(
+                    val, root, cache, visited, target_name=ref_target
+                )
+            elif isinstance(val, list):
+                res_list, changed = self._resolve_list_field(
+                    val, root, cache, visited, ref_target
+                )
+                if changed:
+                    updates[field_name] = res_list
+            elif isinstance(val, dict):
+                res_dict, changed = self._resolve_dict_field(
+                    val, root, cache, visited, ref_target, field_name
+                )
+                if changed:
+                    updates[field_name] = res_dict
+            elif isinstance(val, BaseModel):
+                self._walk(val, root, cache, visited)
+        for k, v in updates.items():
+            setattr(obj, k, v)
+
     def _walk(
         self,
         obj: Any,
@@ -501,72 +607,15 @@ class RefResolver:
         visited: set[str],
     ) -> None:
         if isinstance(obj, BaseModel):
-            updates: dict[str, Any] = {}
-            for field_name in type(obj).model_fields:
-                val = getattr(obj, field_name)
-                annotation = type(obj).model_fields[field_name].annotation
-                ref_target = self._ref_target_name(annotation)
-                if isinstance(val, Ref):
-                    updates[field_name] = self._resolve_ref(
-                        val, root, cache, visited, target_name=ref_target
-                    )
-                elif isinstance(val, list):
-                    resolved_list: list[Any] = []
-                    changed = False
-                    for item in val:
-                        if isinstance(item, Ref):
-                            resolved_list.append(
-                                self._resolve_ref(
-                                    item, root, cache, visited, target_name=ref_target
-                                )
-                            )
-                            changed = True
-                        else:
-                            resolved_list.append(item)
-                            if isinstance(item, BaseModel):
-                                self._walk(item, root, cache, visited)
-                    if changed:
-                        updates[field_name] = resolved_list
-                elif isinstance(val, dict):
-                    resolved_dict: dict[Any, Any] = {}
-                    changed = False
-                    for k, v in val.items():
-                        if isinstance(v, Ref):
-                            resolved_dict[k] = self._resolve_ref(
-                                v, root, cache, visited, target_name=ref_target
-                            )
-                            changed = True
-                        else:
-                            resolved_dict[k] = v
-                            if isinstance(v, BaseModel):
-                                if not hasattr(v, "_ref_name"):
-                                    try:
-                                        object.__setattr__(v, "_ref_name", str(k))
-                                        object.__setattr__(
-                                            v, "_ref_path", f"{field_name}.{k}"
-                                        )
-                                        object.__setattr__(
-                                            v, "_config_registry", field_name
-                                        )
-                                    except Exception:
-                                        pass
-                                self._walk(v, root, cache, visited)
-                    if changed:
-                        updates[field_name] = resolved_dict
-                elif isinstance(val, BaseModel):
-                    self._walk(val, root, cache, visited)
-            for k, v in updates.items():
-                setattr(obj, k, v)
+            self._walk_model(obj, root, cache, visited)
         elif isinstance(obj, dict):
             for k, v in list(obj.items()):
                 if isinstance(v, Ref):
                     obj[k] = self._resolve_ref(v, root, cache, visited)
                 elif isinstance(v, BaseModel):
                     if not hasattr(v, "_ref_name"):
-                        try:
+                        with contextlib.suppress(Exception):
                             object.__setattr__(v, "_ref_name", str(k))
-                        except Exception:
-                            pass
                     self._walk(v, root, cache, visited)
         elif isinstance(obj, list):
             for i, item in enumerate(obj):
@@ -602,8 +651,8 @@ def _load_environment_defaults(config: "AppConfig") -> None:
 
     def walk(
         value: Any,
-        registry_key: Optional[str] = None,
-        config_key: Optional[str] = None,
+        registry_key: str | None = None,
+        config_key: str | None = None,
         field_path: tuple[str, ...] = (),
     ) -> None:
         if isinstance(value, BaseModel):
@@ -644,8 +693,8 @@ def _load_environment_defaults(config: "AppConfig") -> None:
 
 def _load_model_environment(
     model: BaseModel,
-    registry_key: Optional[str],
-    config_key: Optional[str],
+    registry_key: str | None,
+    config_key: str | None,
     field_path: tuple[str, ...],
 ) -> None:
     """Fill annotated, unset fields on one configuration model."""
@@ -665,8 +714,8 @@ def _environment_name(field_path: tuple[str, ...]) -> str:
 
 
 def _get_environment_value(
-    registry_key: Optional[str], config_key: Optional[str], env_var: str
-) -> Optional[str]:
+    registry_key: str | None, config_key: str | None, env_var: str
+) -> str | None:
     """Look up a registry-scoped environment variable before a global fallback."""
     if registry_key and config_key:
         sanitized_key = re.sub(r"[^A-Za-z0-9]+", "_", config_key).strip("_").upper()

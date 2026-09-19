@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from podcaster.config import AppConfig
 from podcaster.workflows import WorkflowPlugin
 
+from ..notifications import DeepDiveArticleNotification
 from .config import DeepDiveArticleConfig
 
 
@@ -29,4 +30,5 @@ WORKFLOW_PLUGIN = WorkflowPlugin(
     type_name="deep_dive_article",
     config_type=DeepDiveArticleConfig,
     command_factory=create_command,
+    notification_type=DeepDiveArticleNotification,
 )

@@ -6,7 +6,6 @@ from pydantic import ValidationError
 from podcaster.config import (
     DEFAULT_COVER_MODEL,
     AppConfig,
-    GenerateCoverConfig,
     GenerateCoverSpecConfig,
     ImporterConfig,
     PodcastGenerationConfig,

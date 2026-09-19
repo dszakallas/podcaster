@@ -1,7 +1,5 @@
 """Unit tests for RefResolver and Ref."""
 
-from typing import Dict, List, Optional, Union
-
 import pytest
 from pydantic import BaseModel, ConfigDict
 
@@ -26,6 +24,7 @@ def _app_config(**overrides):
     }
     config.update(overrides)
     return AppConfig.model_validate(config)
+
 
 # ---------------------------------------------------------------------------
 # Test config models (isolated from AppConfig)
@@ -53,35 +52,35 @@ class CacheConfig(BaseModel):
 class AppRef(BaseModel):
     """A small config model that uses Ref for testing."""
 
-    service: Union[Ref[ServiceConfig], ServiceConfig]
-    database: Optional[Union[Ref[DatabaseConfig], DatabaseConfig]] = None
-    tags: List[str] = []
+    service: Ref[ServiceConfig] | ServiceConfig
+    database: Ref[DatabaseConfig] | DatabaseConfig | None = None
+    tags: list[str] = []
 
 
 class ListRefModel(BaseModel):
-    services: List[Union[Ref[ServiceConfig], ServiceConfig]]
+    services: list[Ref[ServiceConfig] | ServiceConfig]
 
 
 class DictRefModel(BaseModel):
-    services: Dict[str, Union[Ref[ServiceConfig], ServiceConfig]]
+    services: dict[str, Ref[ServiceConfig] | ServiceConfig]
 
 
 class NestedRefModel(BaseModel):
     """Model where the resolved target itself contains a Ref."""
 
-    app: Union[Ref[AppRef], AppRef]
+    app: Ref[AppRef] | AppRef
 
 
 class RootConfig(BaseModel):
     """Simulated root config with registries."""
 
-    services: Dict[str, ServiceConfig]
-    databases: Dict[str, DatabaseConfig]
-    caches: Dict[str, CacheConfig]
-    apps: Dict[str, AppRef]
-    main_app: Optional[Union[Ref[AppRef], AppRef]] = None
-    service_list: List[Union[Ref[ServiceConfig], ServiceConfig]] = []
-    nested: Optional[Union[Ref[NestedRefModel], NestedRefModel]] = None
+    services: dict[str, ServiceConfig]
+    databases: dict[str, DatabaseConfig]
+    caches: dict[str, CacheConfig]
+    apps: dict[str, AppRef]
+    main_app: Ref[AppRef] | AppRef | None = None
+    service_list: list[Ref[ServiceConfig] | ServiceConfig] = []
+    nested: Ref[NestedRefModel] | NestedRefModel | None = None
 
 
 REGISTRIES = {
@@ -288,7 +287,7 @@ class TestErrors:
             value: str = "x"
 
         class ModelWithUnknown(BaseModel):
-            item: Union[Ref[UnknownConfig], UnknownConfig]
+            item: Ref[UnknownConfig] | UnknownConfig
 
         resolver = RefResolver({})  # empty registries
         config = RootConfig(
@@ -329,7 +328,7 @@ class TestErrors:
             value: str = "x"
 
         class Holder(BaseModel):
-            ref_field: Union[Ref[SomeConfig], SomeConfig]
+            ref_field: Ref[SomeConfig] | SomeConfig
 
         root = RootConfig(services={}, databases={}, caches={}, apps={})
         holder = Holder(ref_field=Ref[SomeConfig](ref="test"))
@@ -375,7 +374,7 @@ class TestRefCoercion:
         """Pydantic's before-validator coerces bare strings to Ref objects."""
 
         class Holder(BaseModel):
-            svc: Union[Ref[ServiceConfig], ServiceConfig]
+            svc: Ref[ServiceConfig] | ServiceConfig
 
         # When a string is passed, the Ref before-validator turns it into {"ref": "..."}
         # But since the field is Union[Ref, ServiceConfig], Pydantic tries Ref first

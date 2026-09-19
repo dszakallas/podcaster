@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from importlib import import_module
 from pkgutil import iter_modules
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING
 
 import click
 from pydantic import BaseModel
@@ -21,6 +22,7 @@ class WorkflowPlugin:
     type_name: str
     config_type: type[BaseModel]
     command_factory: Callable[[str, AppConfig, BaseModel], click.Command]
+    notification_type: type[BaseModel] | None = None
 
 
 def discover_workflow_plugins() -> dict[str, WorkflowPlugin]:

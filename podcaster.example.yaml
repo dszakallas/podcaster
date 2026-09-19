@@ -57,6 +57,14 @@ podcast_generators:
     # Target languages for generation
     languages: ["en"]
     length: "long"
+  topic-deep-dive:
+    languages: ["en"]
+    length: "default"
+    task: "topic_deep_dive"
+  topic-debate:
+    languages: ["en"]
+    length: "default"
+    task: "topic_debate"
 
 # ID3 tagging settings for the generated audio files
 podcast_tags:
@@ -126,6 +134,56 @@ workflow:
       distribute:
         # Deploy using Rsync/Rclone target
         - ref: gdrive-backup
+    # Topic-driven workflow preset: creates podcasts from a topic brief and web research
+    topic-default:
+      # The workflow type ("topic_workflow")
+      type: "topic_workflow"
+      podcast_generator:
+        # Default generator settings (languages, length) inherited if not overridden by recipe
+        ref: "default"
+      # Web research & source enrichment options
+      enrich_web:
+        enable: true
+        retry_count: 0
+        spec:
+          mode: "fast"
+          fallback_importer:
+            ref: "scraper"
+      generate_cover:
+        enable: true
+        retry_count: 0
+        spec:
+          model: "gemini-3.1-flash-image"
+      transcribe:
+        enable: true
+        retry_count: 0
+        podcast_transcriber:
+          ref: "default"
+      tagging:
+        enable: true
+        spec:
+          ref: "default"
+      distribute:
+        - ref: gdrive-backup
+
+# Topic workflow recipe format (passed via -r/--recipe, --recipe-json, or inferred from -p/--prompt):
+#
+# research:
+#   query: "Future of AI code generation"
+#   mode: "deep" # "fast" or "deep"
+# podcasts:
+#   - type: "TopicDeepDive"
+#     focus: "Autonomous developer agents"
+#     length: "default"
+#     languages: ["en"]
+#     host_role: "Host"
+#     co_host_role: "Tech Expert"
+#   - type: "TopicDebate"
+#     focus: "Economic impact and job disruption"
+#     length: "short"
+#     languages: ["en"]
+#     host_role: "Skeptic"
+#     guest_role: "Optimist"
 
 # Importers definition
 importers:

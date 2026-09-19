@@ -1,10 +1,10 @@
 import logging
-from typing import Optional, Union
+from typing import Any
 
 import httpx
 from jinja2 import Template
 
-from .base import Notifier
+from .base import Notifier, register_notifier
 
 logger = logging.getLogger(__name__)
 
@@ -13,7 +13,14 @@ DEFAULT_DISCORD_TEMPLATE = Template(
     "{%- if dest_display %}\n- **Destination**: `{{ dest_display }}`\n{%- endif %}\n"
     "{%- for key, value in metadata.items() %}\n"
     "{%- if value is iterable and value is not string and value is not mapping %}\n"
+    "{%- if value | length > 0 and (value[0] | string | length) > 5 %}\n"
+    "- **{{ key | replace('_', ' ') | title }}**:\n"
+    "{%- for item in value %}\n"
+    "  • {{ item }}\n"
+    "{%- endfor %}\n"
+    "{%- else %}\n"
     "- **{{ key | replace('_', ' ') | title }}**: {{ value | join(', ') }}\n"
+    "{%- endif %}\n"
     "{%- else %}\n"
     "- **{{ key | replace('_', ' ') | title }}**: {{ value }}\n"
     "{%- endif %}\n"
@@ -22,14 +29,16 @@ DEFAULT_DISCORD_TEMPLATE = Template(
 
 
 async def send_discord_notification(
-    metadata: Optional[dict] = None,
-    webhook_url: Optional[str] = None,
-    bot_token: Optional[str] = None,
-    channel_id: Optional[Union[int, str]] = None,
-    dist_result: Optional[dict] = None,
+    metadata: dict | None = None,
+    webhook_url: str | None = None,
+    bot_token: str | None = None,
+    channel_id: int | str | None = None,
+    dist_result: dict | None = None,
 ) -> dict:
 
     meta = metadata or {}
+    if "notification" in meta and isinstance(meta["notification"], dict):
+        meta = meta["notification"]
 
     dest_display = None
     if dist_result and isinstance(dist_result, dict):
@@ -101,10 +110,10 @@ class DiscordNotifier(Notifier):
 
     def __init__(
         self,
-        webhook_url: Optional[str] = None,
-        bot_token: Optional[str] = None,
-        channel_id: Optional[Union[int, str]] = None,
-        name: Optional[str] = None,
+        webhook_url: str | None = None,
+        bot_token: str | None = None,
+        channel_id: int | str | None = None,
+        name: str | None = None,
     ):
         self.webhook_url = webhook_url
         self.bot_token = bot_token
@@ -113,8 +122,8 @@ class DiscordNotifier(Notifier):
 
     async def notify(
         self,
-        metadata: Optional[dict] = None,
-        dist_result: Optional[dict] = None,
+        metadata: dict | None = None,
+        dist_result: dict | None = None,
     ) -> dict:
         return await send_discord_notification(
             metadata=metadata,
@@ -123,3 +132,16 @@ class DiscordNotifier(Notifier):
             channel_id=self.channel_id,
             dist_result=dist_result,
         )
+
+
+def _build_discord_notifier(cfg: Any, name: str | None = None) -> Notifier:
+    assert cfg.discord is not None
+    return DiscordNotifier(
+        webhook_url=cfg.discord.webhook_url,
+        bot_token=cfg.discord.bot_token,
+        channel_id=cfg.discord.channel_id,
+        name=name,
+    )
+
+
+register_notifier("discord", _build_discord_notifier)

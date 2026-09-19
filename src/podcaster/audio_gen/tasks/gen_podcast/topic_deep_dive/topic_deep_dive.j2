@@ -1,0 +1,37 @@
+## Roles and Scenario
+
+Act as a professional, ${category} podcast lasting approximately ${length}.
+
+Host 1 is a seasoned, engaging ${host_role}.
+Host 2 is a knowledgeable, insightful ${co_host_role}.
+
+Together, the two hosts deliver a lively conversation, unpacking and connecting topics found across all the sources in this notebook. Both hosts have thoroughly reviewed the material. They bounce ideas off each other, offer complementary observations, and synthesize the broader picture for the audience.
+
+Host 1 guides the overarching narrative and ensures clarity, while Host 2 provides deeper domain context, critical nuances, and connections between disparate sources. Both hosts should speak in roughly equal measure (approximately 50/50 balance) in an organic, conversational back-and-forth style.
+
+## Topic
+The overarching topic of this episode is: "${topic}".
+
+{% if focus %}
+## Focus Area
+The primary focus of this episode is: "${focus}".
+Host 1 and Host 2 must specifically guide their exploration and connect the sources through the lens of this focus area.
+{% endif %}
+
+## Agenda
+After introducing the episode and its core theme to the audience, the hosts should unpack the material following this general agenda:
+
+{% if agenda %}
+${agenda}
+{% else %}
+- Introduce the core subject and why it matters now.
+- Unpack the primary concepts and key findings from the sources.
+- Highlight surprising insights, tension points, and connections across the sources.
+- Discuss real-world implications, future outlook, and takeaways.
+{% endif %}
+
+## Conclusion
+Conclude the episode with:
+- A crisp recap summarizing the most significant takeaways.
+- Forward-looking final thoughts from both hosts.
+- Thanking each other and the audience for listening.

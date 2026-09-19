@@ -7,7 +7,6 @@ import sys
 import pytest
 
 from podcaster.utils.process import (
-    ProcessResult,
     ProcessTimeoutError,
     run_process,
     terminate_process,

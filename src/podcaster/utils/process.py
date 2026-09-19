@@ -6,7 +6,6 @@ import os
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional, Union
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +19,7 @@ class ProcessTimeoutError(TimeoutError):
         self,
         message: str,
         *,
-        timeout: Optional[float] = None,
+        timeout: float | None = None,
         stdout: bytes = b"",
         stderr: str = "",
     ) -> None:
@@ -61,7 +60,7 @@ async def terminate_process(
     try:
         await asyncio.wait_for(process.wait(), timeout=grace_period)
         return
-    except asyncio.TimeoutError:
+    except TimeoutError:
         pass
 
     if process.returncode is not None:
@@ -82,12 +81,12 @@ async def terminate_process(
 async def run_process(
     cmd_args: Sequence[str],
     *,
-    timeout: Optional[float] = None,
+    timeout: float | None = None,
     grace_period: float = DEFAULT_SHUTDOWN_GRACE_PERIOD,
-    on_stderr_line: Optional[Callable[[str], None]] = None,
-    process_name: Optional[str] = None,
-    cwd: Optional[Union[str, Path]] = None,
-    env: Optional[Dict[str, str]] = None,
+    on_stderr_line: Callable[[str], None] | None = None,
+    process_name: str | None = None,
+    cwd: str | Path | None = None,
+    env: dict[str, str] | None = None,
 ) -> ProcessResult:
     """Runs a subprocess with streaming stderr, timeout, and two-way SIGTERM -> SIGKILL termination."""
     if timeout is not None and timeout <= 0:
@@ -103,12 +102,13 @@ async def run_process(
         env=env,
     )
 
+    stdout_chunks: list[bytes] = []
     stderr_lines: list[str] = []
+    timed_out = False
 
-    async def _read_stdout() -> bytes:
+    async def _read_stdout() -> None:
         if process.stdout:
-            return await process.stdout.read()
-        return b""
+            stdout_chunks.append(await process.stdout.read())
 
     async def _read_stderr() -> None:
         if process.stderr:
@@ -122,16 +122,12 @@ async def run_process(
                     if on_stderr_line:
                         on_stderr_line(line_str)
 
-    stdout_task = asyncio.create_task(_read_stdout())
-    stderr_task = asyncio.create_task(_read_stderr())
-
-    stdout_bytes = b""
-    timed_out = False
-    try:
+    async def _wait_process() -> None:
+        nonlocal timed_out
         if timeout is not None and timeout > 0:
             try:
                 await asyncio.wait_for(process.wait(), timeout=timeout)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 timed_out = True
                 logger.warning(
                     "%s (PID %s) timed out after %s seconds.",
@@ -142,21 +138,17 @@ async def run_process(
                 await terminate_process(process, grace_period=grace_period)
         else:
             await process.wait()
+
+    try:
+        async with asyncio.TaskGroup() as tg:
+            tg.create_task(_read_stdout())
+            tg.create_task(_read_stderr())
+            tg.create_task(_wait_process())
     finally:
         if process.returncode is None:
             await terminate_process(process, grace_period=grace_period)
 
-        try:
-            stdout_bytes = await asyncio.wait_for(stdout_task, timeout=2.0)
-        except (asyncio.TimeoutError, asyncio.CancelledError):
-            stdout_task.cancel()
-            stdout_bytes = b""
-
-        try:
-            await asyncio.wait_for(stderr_task, timeout=2.0)
-        except (asyncio.TimeoutError, asyncio.CancelledError):
-            stderr_task.cancel()
-
+    stdout_bytes = b"".join(stdout_chunks)
     stderr_text = "\n".join(stderr_lines).strip()
     if timed_out:
         detail = f": {stderr_text}" if stderr_text else ""

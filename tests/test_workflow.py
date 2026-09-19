@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from podcaster import tagging
 from podcaster.config import (
     EnrichWebConfig,
     GCPConfig,
@@ -26,13 +27,21 @@ from podcaster.models import (
     TaskStatus,
     TranscriptionTask,
 )
-from podcaster.workflows.deep_dive_article.config import DeepDiveArticleConfig
-from podcaster.workflows.deep_dive_article.workflow import (
-    deep_dive_article_workflow,
+from podcaster.workflows.common import (
+    AudioProcessingOptions,
+    WorkflowEnvironment,
+    WorkflowNotebookContext,
     generate_cover_step,
+    poll_audio_tasks_step,
+    process_audio_tasks,
     process_single_audio_task_step,
     tag_audio_artifact_step,
     transcribe_audio_artifact_step,
+)
+from podcaster.workflows.deep_dive_article.config import DeepDiveArticleConfig
+from podcaster.workflows.deep_dive_article.workflow import (
+    DeepDiveArticleOverrides,
+    deep_dive_article_workflow,
 )
 
 
@@ -49,11 +58,11 @@ def test_process_single_audio_task_step_gcp_config_passed(dbos_session):
         )
 
         async def mock_poll(tasks, **kwargs):
-            async for t in tasks:
+            async for _ in tasks:
                 yield task_info
 
         async def mock_dl(tasks, **kwargs):
-            async for t in tasks:
+            async for _ in tasks:
                 yield PodcastGenArtifact(
                     notebook_id="test-nb",
                     artifact_id="task-1",
@@ -82,45 +91,49 @@ def test_process_single_audio_task_step_gcp_config_passed(dbos_session):
 
         with (
             patch(
-                "podcaster.workflows.deep_dive_article.workflow.transcription.create_transcription_jobs",
+                "podcaster.workflows.common.transcription.create_transcription_jobs",
                 side_effect=mock_create_jobs_gen,
             ) as mock_create_jobs,
             patch(
-                "podcaster.workflows.deep_dive_article.workflow.transcription.poll_transcription_jobs",
+                "podcaster.workflows.common.transcription.poll_transcription_jobs",
                 side_effect=mock_poll_jobs_gen,
             ),
             patch(
-                "podcaster.workflows.deep_dive_article.workflow.transcription.download_transcription_jobs",
+                "podcaster.workflows.common.transcription.download_transcription_jobs",
                 side_effect=mock_dl_jobs_gen,
             ),
             patch(
-                "podcaster.workflows.deep_dive_article.workflow.os.path.exists",
+                "podcaster.workflows.common.os.path.exists",
                 return_value=True,
             ),
             patch(
-                "podcaster.workflows.deep_dive_article.workflow.audio_gen_core.poll_tasks",
+                "podcaster.workflows.common.audio_gen_core.poll_tasks",
                 side_effect=mock_poll,
             ),
             patch(
-                "podcaster.workflows.deep_dive_article.workflow.audio_gen_core.download_artifacts",
+                "podcaster.workflows.common.audio_gen_core.download_artifacts",
                 side_effect=mock_dl,
             ),
         ):
 
-            await process_single_audio_task_step(
+            context = WorkflowNotebookContext(
                 notebook_id="test-nb",
-                notebook_title="Test notebook",
-                notebook_created_at="2026-08-24T12:00:00Z",
-                task_info=task_info,
-                cover_image_path=None,
+                title="Test notebook",
+                created_at="2026-08-24T12:00:00Z",
                 working_dir="podcasts/wf_test123",
+            )
+            options = AudioProcessingOptions(
+                notebooklm_config=NotebookLMConfig(),
                 transcribe=True,
                 transcription_languages=["en"],
                 transcribe_retry_count=1,
                 transcription_config=PodcastTranscriptionConfig(),
-                tagging_config=None,
                 gcp_config=custom_gcp,
-                notebooklm_config=NotebookLMConfig(),
+            )
+            await process_single_audio_task_step(
+                context=context,
+                task_info=task_info,
+                options=options,
             )
 
             mock_create_jobs.assert_called_once()
@@ -146,7 +159,7 @@ def test_tag_audio_artifact_step_uses_notebook_metadata(dbos_session):
                 yield item
 
         with patch(
-            "podcaster.workflows.deep_dive_article.workflow.tagging.tag_artifacts",
+            "podcaster.workflows.common.tagging.tag_artifacts",
             side_effect=mock_tag,
         ):
             await tag_audio_artifact_step(
@@ -155,10 +168,69 @@ def test_tag_audio_artifact_step_uses_notebook_metadata(dbos_session):
                 album="Notebook title",
                 created_at="2026-08-24T12:00:00Z",
                 tags_config=PodcastTagsConfig(),
+                track=2,
+                total_tracks=3,
             )
 
         assert captured["album"] == "Notebook title"
         assert captured["created_at"] == "2026-08-24T12:00:00Z"
+        assert captured["track_offset"] == 1
+        assert captured["total_tracks"] == 3
+
+    asyncio.run(_test())
+
+
+def test_tag_artifacts_uses_explicit_metadata_track():
+    async def _test():
+        artifact1 = PodcastGenArtifact(
+            notebook_id="test-nb",
+            artifact_id="art-1",
+            title="Episode 1 en",
+            path="ep1_en.m4a",
+            filename="ep1_en.m4a",
+            metadata={"track": 1, "total_tracks": 2},
+        )
+        artifact2 = PodcastGenArtifact(
+            notebook_id="test-nb",
+            artifact_id="art-2",
+            title="Episode 1 cs",
+            path="ep1_cs.m4a",
+            filename="ep1_cs.m4a",
+            metadata={"track": 1, "total_tracks": 2},
+        )
+        artifact3 = PodcastGenArtifact(
+            notebook_id="test-nb",
+            artifact_id="art-3",
+            title="Episode 2 en",
+            path="ep2_en.m4a",
+            filename="ep2_en.m4a",
+            metadata={"track": 2, "total_tracks": 2},
+        )
+
+        tagged_tracks = []
+        with patch("podcaster.tagging.tag_file") as mock_tag_file:
+
+            async def art_stream():
+                for a in [artifact1, artifact2, artifact3]:
+                    yield a
+
+            async for tagged in tagging.tag_artifacts(
+                art_stream(),
+                tags_config=PodcastTagsConfig(),
+            ):
+                tag_meta = tagged.metadata.get("tag-podcast")
+                track_val = tag_meta.get("track") if tag_meta else None
+                assert track_val is not None
+                tagged_tracks.append(track_val)
+
+        assert tagged_tracks == [1, 1, 2]
+        assert mock_tag_file.call_count == 3
+        assert mock_tag_file.call_args_list[0].kwargs["tags"].track == 1
+        assert mock_tag_file.call_args_list[0].kwargs["tags"].total_tracks == 2
+        assert mock_tag_file.call_args_list[1].kwargs["tags"].track == 1
+        assert mock_tag_file.call_args_list[1].kwargs["tags"].total_tracks == 2
+        assert mock_tag_file.call_args_list[2].kwargs["tags"].track == 2
+        assert mock_tag_file.call_args_list[2].kwargs["tags"].total_tracks == 2
 
     asyncio.run(_test())
 
@@ -198,43 +270,166 @@ def test_process_single_audio_task_step_fails_after_transcription_retries(
 
         with (
             patch(
-                "podcaster.workflows.deep_dive_article.workflow.audio_gen_core.poll_tasks",
+                "podcaster.workflows.common.audio_gen_core.poll_tasks",
                 side_effect=mock_poll,
             ),
             patch(
-                "podcaster.workflows.deep_dive_article.workflow.audio_gen_core.download_artifacts",
+                "podcaster.workflows.common.audio_gen_core.download_artifacts",
                 side_effect=mock_download,
             ),
             patch(
-                "podcaster.workflows.deep_dive_article.workflow.transcription.create_transcription_jobs",
+                "podcaster.workflows.common.transcription.create_transcription_jobs",
                 side_effect=failing_create_jobs,
             ),
             patch(
-                "podcaster.workflows.deep_dive_article.workflow.asyncio.sleep",
+                "podcaster.workflows.common.asyncio.sleep",
                 new_callable=AsyncMock,
             ),
-        ):
-            with pytest.raises(
+            pytest.raises(
                 RuntimeError,
                 match="Transcription failed after 2 attempts: transcription service unavailable",
-            ):
-                await process_single_audio_task_step(
-                    notebook_id="test-nb",
-                    notebook_title="Test notebook",
-                    notebook_created_at="2026-08-24T12:00:00Z",
-                    task_info=task_info,
-                    cover_image_path=None,
-                    working_dir="podcasts/wf_test123",
-                    transcribe=True,
-                    transcription_languages=["en"],
-                    transcribe_retry_count=1,
-                    transcription_config=PodcastTranscriptionConfig(),
-                    tagging_config=None,
-                    gcp_config=GCPConfig(),
-                    notebooklm_config=NotebookLMConfig(),
-                )
+            ),
+        ):
+            context = WorkflowNotebookContext(
+                notebook_id="test-nb",
+                title="Test notebook",
+                created_at="2026-08-24T12:00:00Z",
+                working_dir="podcasts/wf_test123",
+            )
+            options = AudioProcessingOptions(
+                notebooklm_config=NotebookLMConfig(),
+                transcribe=True,
+                transcription_languages=["en"],
+                transcribe_retry_count=1,
+                transcription_config=PodcastTranscriptionConfig(),
+                gcp_config=GCPConfig(),
+            )
+            await process_single_audio_task_step(
+                context=context,
+                task_info=task_info,
+                options=options,
+            )
 
         assert attempts == 2
+
+    asyncio.run(_test())
+
+
+def test_poll_audio_tasks_step_completes_in_order(dbos_session):
+    async def _test():
+        task1 = PodcastGenTask(notebook_id="test-nb", task_id="task-1")
+        task2 = PodcastGenTask(notebook_id="test-nb", task_id="task-2")
+
+        async def mock_poll(tasks, **kwargs):
+            # Yield out of order
+            yield PodcastGenTask(
+                notebook_id="test-nb",
+                task_id="task-2",
+                status=TaskStatus.COMPLETED,
+            )
+            yield PodcastGenTask(
+                notebook_id="test-nb",
+                task_id="task-1",
+                status=TaskStatus.COMPLETED,
+            )
+
+        with patch(
+            "podcaster.workflows.common.audio_gen_core.poll_tasks",
+            side_effect=mock_poll,
+        ):
+            results = await poll_audio_tasks_step(
+                tasks=[task1, task2],
+                notebooklm_config=NotebookLMConfig(),
+            )
+            assert len(results) == 2
+            assert results[0].task_id == "task-1"
+            assert results[1].task_id == "task-2"
+
+    asyncio.run(_test())
+
+
+def test_poll_audio_tasks_step_raises_on_failure(dbos_session):
+    async def _test():
+        task1 = PodcastGenTask(notebook_id="test-nb", task_id="task-1")
+
+        async def mock_poll(tasks, **kwargs):
+            yield PodcastGenTask(
+                notebook_id="test-nb",
+                task_id="task-1",
+                status=TaskStatus.FAILED,
+                error="Generation failed: quota exceeded",
+            )
+
+        with (
+            patch(
+                "podcaster.workflows.common.audio_gen_core.poll_tasks",
+                side_effect=mock_poll,
+            ),
+            pytest.raises(RuntimeError, match="quota exceeded"),
+        ):
+            await poll_audio_tasks_step(
+                tasks=[task1],
+                notebooklm_config=NotebookLMConfig(),
+            )
+
+    asyncio.run(_test())
+
+
+def test_process_audio_tasks_processes_all(dbos_session):
+    async def _test():
+        task1 = PodcastGenTask(
+            notebook_id="test-nb",
+            task_id="task-1",
+            status=TaskStatus.COMPLETED,
+            metadata={"generate-podcast": {"language": "en"}},
+        )
+        task2 = PodcastGenTask(
+            notebook_id="test-nb",
+            task_id="task-2",
+            status=TaskStatus.COMPLETED,
+            metadata={"generate-podcast": {"language": "cs"}},
+        )
+
+        async def mock_poll(tasks, **kwargs):
+            yield task1
+            yield task2
+
+        async def mock_dl(tasks, **kwargs):
+            async for t in tasks:
+                yield PodcastGenArtifact(
+                    notebook_id="test-nb",
+                    artifact_id=t.task_id,
+                    title=f"Title {t.task_id}",
+                    path=f"{t.task_id}.m4a",
+                    filename=f"{t.task_id}.m4a",
+                )
+
+        with (
+            patch(
+                "podcaster.workflows.common.audio_gen_core.poll_tasks",
+                side_effect=mock_poll,
+            ),
+            patch(
+                "podcaster.workflows.common.audio_gen_core.download_artifacts",
+                side_effect=mock_dl,
+            ),
+        ):
+            context = WorkflowNotebookContext(
+                notebook_id="test-nb",
+                title="Test Title",
+                working_dir="podcasts/test_wf",
+            )
+            options = AudioProcessingOptions(
+                notebooklm_config=NotebookLMConfig(),
+            )
+            artifacts = await process_audio_tasks(
+                context=context,
+                audio_tasks=[task1, task2],
+                options=options,
+            )
+            assert len(artifacts) == 2
+            assert artifacts[0].artifact_id == "task-1"
+            assert artifacts[1].artifact_id == "task-2"
 
     asyncio.run(_test())
 
@@ -256,17 +451,19 @@ def test_transcription_step_does_not_retry_permanent_failure(dbos_session):
             raise ValueError("invalid transcription request")
             yield
 
-        with patch(
-            "podcaster.workflows.deep_dive_article.workflow.transcription.create_transcription_jobs",
-            side_effect=failing_create_jobs,
+        with (
+            patch(
+                "podcaster.workflows.common.transcription.create_transcription_jobs",
+                side_effect=failing_create_jobs,
+            ),
+            pytest.raises(ValueError, match="invalid transcription request"),
         ):
-            with pytest.raises(ValueError, match="invalid transcription request"):
-                await transcribe_audio_artifact_step(
-                    artifact,
-                    retry_count=2,
-                    transcription_config=PodcastTranscriptionConfig(),
-                    gcp_config=GCPConfig(),
-                )
+            await transcribe_audio_artifact_step(
+                artifact,
+                retry_count=2,
+                transcription_config=PodcastTranscriptionConfig(),
+                gcp_config=GCPConfig(),
+            )
 
         assert attempts == 1
 
@@ -299,15 +496,15 @@ def test_generate_cover_step_reuses_created_job_when_retrying(dbos_session):
 
         with (
             patch(
-                "podcaster.workflows.deep_dive_article.workflow.cover.generate_cover_for_notebook",
+                "podcaster.workflows.common.cover.generate_cover_for_notebook",
                 side_effect=fake_generate_cover,
             ),
             patch(
-                "podcaster.workflows.deep_dive_article.workflow.get_notebooklm_client",
+                "podcaster.workflows.common.get_notebooklm_client",
                 side_effect=fake_notebooklm_client,
             ),
             patch(
-                "podcaster.workflows.deep_dive_article.workflow.asyncio.sleep",
+                "podcaster.workflows.common.asyncio.sleep",
                 new_callable=AsyncMock,
             ),
         ):
@@ -347,11 +544,11 @@ def test_generate_cover_step_passes_configured_model(dbos_session):
 
         with (
             patch(
-                "podcaster.workflows.deep_dive_article.workflow.cover.generate_cover_for_notebook",
+                "podcaster.workflows.common.cover.generate_cover_for_notebook",
                 side_effect=fake_generate_cover,
             ),
             patch(
-                "podcaster.workflows.deep_dive_article.workflow.get_notebooklm_client",
+                "podcaster.workflows.common.get_notebooklm_client",
                 side_effect=fake_notebooklm_client,
             ),
         ):
@@ -428,14 +625,18 @@ def test_deep_dive_workflow_runs_cover_and_enrichment_concurrently(
                 side_effect=create_audio_jobs,
             ),
         ):
+            env = WorkflowEnvironment(
+                workdir=str(tmp_path),
+                workflow_id="wf-parallelism",
+                notebooklm_config=NotebookLMConfig(),
+            )
+            overrides = DeepDiveArticleOverrides(source_url="source.txt")
             await asyncio.wait_for(
                 deep_dive_article_workflow(
                     preset_name="test",
                     wf_config=workflow_config,
-                    workdir=str(tmp_path),
-                    workflow_id="wf-parallelism",
-                    source_url="source.txt",
-                    notebooklm_config=NotebookLMConfig(),
+                    env=env,
+                    overrides=overrides,
                 ),
                 timeout=0.2,
             )
@@ -443,12 +644,8 @@ def test_deep_dive_workflow_runs_cover_and_enrichment_concurrently(
     asyncio.run(_test())
 
 
-def test_deep_dive_workflow_processes_audio_tasks_concurrently(
-    dbos_session, tmp_path
-):
+def test_deep_dive_workflow_processes_audio_tasks_concurrently(dbos_session, tmp_path):
     async def _test():
-        both_tasks_started = asyncio.Event()
-
         async def init_notebook(*args, **kwargs):
             return {
                 "notebook_id": "nb-1",
@@ -462,17 +659,17 @@ def test_deep_dive_workflow_processes_audio_tasks_concurrently(
                 PodcastGenTask(notebook_id="nb-1", task_id="task-fr"),
             ]
 
-        async def process_audio_task(*args, task_info, **kwargs):
-            if task_info.task_id == "task-fr":
-                both_tasks_started.set()
-            await both_tasks_started.wait()
-            return PodcastGenArtifact(
-                notebook_id="nb-1",
-                artifact_id=task_info.task_id,
-                title="Test",
-                path=f"{task_info.task_id}.m4a",
-                filename=f"{task_info.task_id}.m4a",
-            )
+        async def process_audio_tasks_mock(*args, audio_tasks, **kwargs):
+            return [
+                PodcastGenArtifact(
+                    notebook_id="nb-1",
+                    artifact_id=task_info.task_id,
+                    title="Test",
+                    path=f"{task_info.task_id}.m4a",
+                    filename=f"{task_info.task_id}.m4a",
+                )
+                for task_info in audio_tasks
+            ]
 
         workflow_config = DeepDiveArticleConfig(
             type="deep_dive_article",
@@ -498,18 +695,22 @@ def test_deep_dive_workflow_processes_audio_tasks_concurrently(
                 side_effect=create_audio_jobs,
             ),
             patch(
-                "podcaster.workflows.deep_dive_article.workflow.process_single_audio_task_step",
-                side_effect=process_audio_task,
+                "podcaster.workflows.deep_dive_article.workflow.process_audio_tasks",
+                side_effect=process_audio_tasks_mock,
             ),
         ):
+            env = WorkflowEnvironment(
+                workdir=str(tmp_path),
+                workflow_id="wf-audio-parallelism",
+                notebooklm_config=NotebookLMConfig(),
+            )
+            overrides = DeepDiveArticleOverrides(source_url="source.txt")
             result = await asyncio.wait_for(
                 deep_dive_article_workflow(
                     preset_name="test",
                     wf_config=workflow_config,
-                    workdir=str(tmp_path),
-                    workflow_id="wf-audio-parallelism",
-                    source_url="source.txt",
-                    notebooklm_config=NotebookLMConfig(),
+                    env=env,
+                    overrides=overrides,
                 ),
                 timeout=0.2,
             )

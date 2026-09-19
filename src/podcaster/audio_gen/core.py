@@ -4,9 +4,11 @@ import logging
 import math
 import os
 import time
+from collections.abc import AsyncGenerator, AsyncIterable
 from pathlib import Path
-from typing import Any, AsyncGenerator, AsyncIterable, Optional, Union
+from typing import Any
 
+from notebooklm import AudioFormat
 from notebooklm.rpc.types import AudioLength
 
 from ..config import NotebookLMConfig, PodcastGenerationConfig
@@ -14,7 +16,7 @@ from ..models import PodcastGenArtifact, PodcastGenTask, TaskStatus
 from ..utils.duration import parse_duration_minutes, resolve_duration
 from ..utils.files import sanitize
 from ..utils.notebooklm import RetryingNotebookLMClient, get_notebooklm_client
-from ..utils.retry import is_transient_network_exception
+from ..utils.polling import PollingJob, PollStatus
 from .params import AudioGenParams
 
 logger = logging.getLogger(__name__)
@@ -26,7 +28,7 @@ MIN_POLL_INTERVAL = 10.0
 MAX_POLL_INTERVAL = 120.0
 INITIAL_POLL_INTERVAL = 30.0
 POST_ETA_HALF_LIFE = 600.0
-MAX_POLL_TIMEOUT_SECONDS = 1800.0
+MAX_POLL_TIMEOUT_SECONDS = 3600.0
 
 
 def duration_to_audio_length(duration_str: str) -> AudioLength:
@@ -58,19 +60,22 @@ def load_plugin(type_name: str):
     except ImportError as e:
         raise ImportError(
             f"Task plugin '{type_name}' not found in podcaster.audio_gen.tasks.gen_podcast. Detail: {e}"
-        )
+        ) from e
 
 
 async def create_podcast_audio_jobs(
     notebook_id: str,
     type_name: str,
     languages: list[str],
-    length_str: Optional[str],
+    length_str: str | None,
     format_args: dict[str, Any],
     generator_config: PodcastGenerationConfig,
     notebooklm_config: NotebookLMConfig,
     dry_run: bool = False,
 ) -> AsyncGenerator[PodcastGenTask, None]:
+    type_name = type_name or generator_config.task
+    merged_format_args = {**generator_config.format_args, **format_args}
+
     if not languages:
         languages = generator_config.languages
     if languages:
@@ -82,7 +87,11 @@ async def create_podcast_audio_jobs(
     length_str = resolve_duration(length_str or "default")
 
     plugin = load_plugin(type_name)
-    inputs = plugin.Inputs.model_validate(format_args)
+    inputs = plugin.Inputs.model_validate(merged_format_args)
+    raw_audio_format = getattr(plugin, "AUDIO_FORMAT", None)
+    audio_format = (
+        raw_audio_format if isinstance(raw_audio_format, AudioFormat) else None
+    )
 
     async with get_notebooklm_client(notebooklm_config) as client:
         critical_path = Path(__file__).parent / "data" / "critical.md"
@@ -102,13 +111,20 @@ async def create_podcast_audio_jobs(
             if lang_code not in LANGUAGES_SUPPORTING_LENGTH:
                 audio_length = min(audio_length, AudioLength.DEFAULT)
 
+            generate_kwargs: dict[str, Any] = {
+                "language": lang_code,
+                "instructions": instructions,
+                "audio_length": audio_length,
+            }
+            if audio_format is not None:
+                generate_kwargs["audio_format"] = audio_format
+
             try:
                 status = await client.artifacts.generate_audio(
                     notebook_id,
-                    language=lang_code,
-                    instructions=instructions,
-                    audio_length=audio_length,
+                    **generate_kwargs,
                 )
+
                 if status.status == TaskStatus.FAILED or not status.task_id:
                     raise RuntimeError(status.error or "No task ID returned")
                 return PodcastGenTask(
@@ -173,7 +189,7 @@ async def _poll_single_task(
     task_id: str,
     lang_code: str,
     target_time: float = 600.0,
-    generation_started_at: Optional[float] = None,
+    generation_started_at: float | None = None,
 ) -> dict:
     """Polls a single artifact generation task until complete, failed, or timed out.
 
@@ -181,78 +197,133 @@ async def _poll_single_task(
     is provided (e.g. from a resumed workflow), polling starts at the correct offset
     on the curve with an immediate first poll.
     """
-    if generation_started_at is not None:
-        started_at = generation_started_at
-    else:
-        started_at = time.time()
 
-    while True:
-        try:
-            generation_status = await client.artifacts.poll_status(notebook_id, task_id)
-            logger.debug(
-                "[%s] Task %s status: %s",
-                lang_code,
-                task_id,
-                generation_status.status,
-            )
+    async def check_status(_) -> PollStatus:
+        generation_status = await client.artifacts.poll_status(notebook_id, task_id)
+        current_status = getattr(generation_status, "status", "unknown")
+        logger.debug(
+            "[%s] Task %s status: %s",
+            lang_code,
+            task_id,
+            current_status,
+        )
 
-            if generation_status.is_complete:
+        if generation_status.is_complete:
+            artifact = None
+            try:
                 artifacts = await client.artifacts.list(notebook_id)
                 artifact = next(
                     (item for item in artifacts or [] if item.id == task_id), None
                 )
-                return {
-                    "status": TaskStatus.COMPLETED,
-                    "notebook_id": notebook_id,
-                    "artifact_id": task_id,
+            except Exception as list_err:
+                logger.debug(
+                    "[%s] Failed to fetch artifact details from list: %s",
+                    lang_code,
+                    list_err,
+                )
+            created_at_dt = getattr(artifact, "created_at", None) if artifact else None
+            return PollStatus(
+                status=TaskStatus.COMPLETED,
+                data={
                     "title": getattr(artifact, "title", None),
                     "created_at": (
-                        artifact.created_at.isoformat()
-                        if artifact and getattr(artifact, "created_at", None)
-                        else None
+                        created_at_dt.isoformat() if created_at_dt else None
                     ),
-                }
-
-            if generation_status.is_failed or generation_status.is_removed:
-                error_msg = generation_status.error or (
-                    f"NotebookLM artifact status is '{generation_status.status}'"
-                )
-                return {
-                    "status": TaskStatus.FAILED,
-                    "notebook_id": notebook_id,
-                    "artifact_id": task_id,
-                    "error": error_msg,
-                }
-        except Exception as e:
-            if not is_transient_network_exception(e):
-                logger.error(
-                    f"[{lang_code}] Non-retryable polling error for task {task_id}: {e}"
-                )
-                return {
-                    "status": TaskStatus.FAILED,
-                    "notebook_id": notebook_id,
-                    "artifact_id": task_id,
-                    "error": str(e),
-                }
-            logger.warning(
-                f"[{lang_code}] Transient network error polling task {task_id}: {e}"
+                    "raw_status": current_status,
+                },
             )
 
-        t = time.time() - started_at
-        if t > MAX_POLL_TIMEOUT_SECONDS:
-            logger.warning(f"[{lang_code}] Task {task_id} timed out after {t:.1f}s")
-            return {
-                "status": TaskStatus.FAILED,
-                "notebook_id": notebook_id,
-                "artifact_id": task_id,
-                "error": f"Task {task_id} timed out after {t:.1f} seconds",
-            }
+        if generation_status.is_failed or generation_status.is_removed:
+            error_msg = generation_status.error or (
+                f"NotebookLM artifact status is '{generation_status.status}'"
+            )
+            return PollStatus(
+                status=TaskStatus.FAILED,
+                error=error_msg,
+                data={"raw_status": current_status},
+            )
 
-        interval = _poll_interval(t, target_time)
-        logger.debug(
-            f"[{lang_code}] Task {task_id} next poll in {interval:.0f}s (t={t:.0f}s, target={target_time:.0f}s)"
+        return PollStatus(
+            status=TaskStatus.IN_PROGRESS,
+            data={"raw_status": current_status},
         )
-        await asyncio.sleep(interval)
+
+    async def fallback_on_timeout(_) -> PollStatus | None:
+        try:
+            artifacts = await client.artifacts.list(notebook_id)
+            artifact = next(
+                (item for item in artifacts or [] if item.id == task_id), None
+            )
+            if artifact and getattr(artifact, "status", None) == 3:  # COMPLETED
+                logger.info(
+                    "[%s] Task %s artifact confirmed completed via fallback list check despite poll timeout",
+                    lang_code,
+                    task_id,
+                )
+                created_at_fallback = getattr(artifact, "created_at", None)
+                return PollStatus(
+                    status=TaskStatus.COMPLETED,
+                    data={
+                        "title": getattr(artifact, "title", None),
+                        "created_at": (
+                            created_at_fallback.isoformat()
+                            if created_at_fallback
+                            else None
+                        ),
+                    },
+                )
+        except Exception as fallback_err:
+            logger.debug(
+                "[%s] Fallback list check failed on timeout: %s",
+                lang_code,
+                fallback_err,
+            )
+        return None
+
+    def on_status_change(_, ps: PollStatus, elapsed: float) -> None:
+        raw_st = ps.data.get("raw_status") if ps.data else None
+        st_label = raw_st or ps.status.value
+        logger.info(
+            "[%s] Polling task %s - status: %s (elapsed: %.0fs, target: %.0fs)",
+            lang_code,
+            task_id,
+            st_label,
+            elapsed,
+            target_time,
+        )
+
+    def calc_interval(elapsed: float) -> float:
+        interval = _poll_interval(elapsed, target_time)
+        logger.debug(
+            f"[{lang_code}] Task {task_id} next poll in {interval:.0f}s (t={elapsed:.0f}s, target={target_time:.0f}s)"
+        )
+        return interval
+
+    job = PollingJob[str](
+        check_status=check_status,
+        timeout=MAX_POLL_TIMEOUT_SECONDS,
+        interval=calc_interval,
+        on_timeout_fallback=fallback_on_timeout,
+        on_status_change=on_status_change,
+        sleep=asyncio.sleep,
+    )
+
+    res = await job.poll_single(task_id, started_at=generation_started_at)
+    res_data = res.data or {}
+    result_dict: dict[str, Any] = {
+        "status": res.status,
+        "notebook_id": notebook_id,
+        "artifact_id": task_id,
+    }
+    if res.status == TaskStatus.COMPLETED:
+        result_dict["title"] = res_data.get("title")
+        result_dict["created_at"] = res_data.get("created_at")
+    else:
+        if res.error and "timed out" in res.error:
+            logger.warning(f"[{lang_code}] Task {task_id} timed out: {res.error}")
+        result_dict["error"] = res.error
+
+    return result_dict
 
 
 async def poll_tasks(
@@ -295,18 +366,22 @@ async def poll_tasks(
         async for task in tasks:
             pending.add(asyncio.create_task(wrap_poll(task)))
 
-        while pending:
-            done, pending = await asyncio.wait(
-                pending, return_when=asyncio.FIRST_COMPLETED
-            )
-            for fut in done:
-                result = await fut
-                if result:
-                    yield result
+        try:
+            while pending:
+                done, pending = await asyncio.wait(
+                    pending, return_when=asyncio.FIRST_COMPLETED
+                )
+                for fut in done:
+                    result = await fut
+                    if result:
+                        yield result
+        finally:
+            for fut in pending:
+                fut.cancel()
 
 
 async def download_artifacts(
-    artifacts: AsyncIterable[Union[PodcastGenTask, PodcastGenArtifact]],
+    artifacts: AsyncIterable[PodcastGenTask | PodcastGenArtifact],
     working_dir: str,
     notebooklm_config: NotebookLMConfig,
 ) -> AsyncGenerator[PodcastGenArtifact, None]:

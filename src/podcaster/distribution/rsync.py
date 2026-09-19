@@ -4,13 +4,13 @@ import os
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Optional
+from typing import Any
 
 from jinja2 import Environment, StrictUndefined
 
 from ..notifier import Notifier
 from ..utils.files import sanitize
-from .base import Distribution
+from .base import Distribution, register_distribution
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +68,7 @@ def _link_artifact_files(
             os.link(source, destination)
 
 
-def rsync_dir(src: str, dst: str, flags: Optional[list[str]] = None):
+def rsync_dir(src: str, dst: str, flags: list[str] | None = None):
     """Rsyncs a directory to a destination, creating parent if needed."""
     parent_dir = os.path.dirname(dst.rstrip("/"))
     if parent_dir and ":" not in parent_dir:
@@ -92,7 +92,7 @@ def rsync_dir(src: str, dst: str, flags: Optional[list[str]] = None):
     subprocess.run(cmd, check=True)
 
 
-def rclone_copy_dir(src: str, dst: str, flags: Optional[list[str]] = None):
+def rclone_copy_dir(src: str, dst: str, flags: list[str] | None = None):
     """Copies a directory using rclone, creating parent if needed."""
     cmd = ["rclone", "copy"]
     if flags:
@@ -105,9 +105,9 @@ async def sync_podcast(
     working_dir: str,
     destination: str,
     method: str = "rsync",
-    flags: Optional[list[str]] = None,
-    filename_template: Optional[str] = None,
-    metadata: Optional[dict] = None,
+    flags: list[str] | None = None,
+    filename_template: str | None = None,
+    metadata: dict | None = None,
 ) -> dict:
 
     if not os.path.exists(working_dir):
@@ -160,10 +160,10 @@ class RsyncDistribution(Distribution):
         self,
         destination: str,
         method: str = "rsync",
-        flags: Optional[list[str]] = None,
-        filename_template: Optional[str] = None,
-        notifiers: Optional[list[Notifier]] = None,
-        name: Optional[str] = None,
+        flags: list[str] | None = None,
+        filename_template: str | None = None,
+        notifiers: list[Notifier] | None = None,
+        name: str | None = None,
     ):
         super().__init__(notifiers=notifiers)
         self.destination = destination
@@ -175,7 +175,7 @@ class RsyncDistribution(Distribution):
     async def _distribute(
         self,
         working_dir: str,
-        metadata: Optional[dict] = None,
+        metadata: dict | None = None,
     ) -> dict:
         res = await sync_podcast(
             working_dir=working_dir,
@@ -188,3 +188,22 @@ class RsyncDistribution(Distribution):
         if self.name:
             res["distribution"] = self.name
         return res
+
+
+def _build_rsync_distribution(
+    dist_cfg: Any,
+    name: str | None,
+    notifiers: list[Notifier],
+) -> Distribution:
+    assert dist_cfg.rsync is not None
+    return RsyncDistribution(
+        destination=dist_cfg.rsync.destination or "",
+        method=dist_cfg.rsync.method or "rsync",
+        flags=dist_cfg.rsync.flags,
+        filename_template=dist_cfg.rsync.filename_template,
+        notifiers=notifiers,
+        name=name,
+    )
+
+
+register_distribution("rsync", _build_rsync_distribution)

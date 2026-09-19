@@ -1,6 +1,6 @@
 """Configuration for the deep-dive article workflow."""
 
-from typing import List, Literal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
@@ -27,4 +27,4 @@ class DeepDiveArticleConfig(BaseModel):
     generate_cover: GenerateCoverConfig
     transcribe: TranscribeConfig
     tagging: TaggingConfig
-    distribute: List[MaybeRef[DistributionConfig]]
+    distribute: list[MaybeRef[DistributionConfig]]

@@ -146,7 +146,7 @@ def test_import_source_uses_the_supplied_client() -> None:
         client = MagicMock()
         importer = MagicMock()
         with patch(
-            "podcaster.research.execute_importer",
+            "podcaster.importers.execute_importer",
             new_callable=AsyncMock,
             return_value={"source_id": "source-1"},
         ) as execute_importer:
@@ -298,7 +298,10 @@ class TestResearchFallbackAndImportFailures:
         async def run_test():
             with pytest.raises(RuntimeError) as excinfo:
                 async for _ in poll_research_jobs(
-                    gen(), NotebookLMConfig(), fallback_importer=None, max_import_failures=1
+                    gen(),
+                    NotebookLMConfig(),
+                    fallback_importer=None,
+                    max_import_failures=1,
                 ):
                     pass
 
@@ -313,9 +316,7 @@ class TestResearchFallbackAndImportFailures:
             async def poll(self, notebook_id):
                 return {
                     "status": "completed",
-                    "sources": [
-                        ResearchSource(url="https://bad1.com", title="Bad 1")
-                    ],
+                    "sources": [ResearchSource(url="https://bad1.com", title="Bad 1")],
                 }
 
             async def import_sources(self, notebook_id, task_id, sources):
@@ -359,12 +360,159 @@ class TestResearchFallbackAndImportFailures:
         async def run_test():
             results = []
             async for r in poll_research_jobs(
-                gen(), NotebookLMConfig(), fallback_importer=None, max_import_failures=None
+                gen(),
+                NotebookLMConfig(),
+                fallback_importer=None,
+                max_import_failures=None,
             ):
                 results.append(r)
 
             assert len(results) == 1
             assert results[0].imported_count == 0
+
+        asyncio.run(run_test())
+
+    def test_poll_research_jobs_uses_effective_task_id_for_batch_import(
+        self, monkeypatch
+    ):
+        from podcaster.research import ResearchTask, poll_research_jobs
+
+        passed_task_id = []
+        passed_sources = []
+        source = ResearchSource(
+            url="https://example.com/ai",
+            title="AI Advances",
+            research_task_id="uuid-task-456",
+        )
+
+        class DummyResearchClient:
+            async def poll(self, notebook_id):
+                return {
+                    "task_id": "uuid-task-456",
+                    "status": "completed",
+                    "sources": [source],
+                }
+
+            async def import_sources(self, notebook_id, task_id, sources):
+                passed_task_id.append(task_id)
+                passed_sources.extend(sources)
+                return [{"id": "src-new-1", "title": "AI Advances"}]
+
+        class DummyClientCtx:
+            async def __aenter__(self):
+                return type(
+                    "DummyClient",
+                    (),
+                    {
+                        "research": DummyResearchClient(),
+                        "sources": type(
+                            "DummySources",
+                            (),
+                            {
+                                "list": lambda self, n: [
+                                    type(
+                                        "Source",
+                                        (),
+                                        {
+                                            "id": "src-new-1",
+                                            "url": "https://example.com/ai",
+                                            "title": "AI Advances",
+                                            "status": "ready",
+                                        },
+                                    )()
+                                ],
+                                "delete": lambda self, n, i: None,
+                            },
+                        )(),
+                    },
+                )()
+
+            async def __aexit__(self, exc_type, exc_val, exc_tb):
+                pass
+
+        monkeypatch.setattr(
+            "podcaster.research.get_notebooklm_client", lambda _config: DummyClientCtx()
+        )
+
+        async def gen():
+            # Initial task_id from start was a kickoff operation ID
+            yield ResearchTask(
+                notebook_id="nb1",
+                source_id="src1",
+                task_id="kickoff-operation-id-123",
+                topic="AI Topic",
+                summary="Summary",
+                suggested_duration="default",
+            )
+
+        async def run_test():
+            results = []
+            async for r in poll_research_jobs(
+                gen(),
+                NotebookLMConfig(),
+                fallback_importer=None,
+            ):
+                results.append(r)
+
+            assert len(results) == 1
+            assert results[0].task_id == "uuid-task-456"
+            assert results[0].imported_count == 1
+            assert passed_task_id == ["uuid-task-456"]
+            assert len(passed_sources) == 1
+
+        asyncio.run(run_test())
+
+    def test_poll_research_jobs_yields_failed_status_on_non_transient_error(
+        self, monkeypatch
+    ):
+        from podcaster.models import TaskStatus
+        from podcaster.research import ResearchTask, poll_research_jobs
+
+        class BrokenResearchClient:
+            async def poll(self, notebook_id):
+                raise ValueError("Permanent NotebookLM API error")
+
+        class DummyClientCtx:
+            async def __aenter__(self):
+                return type(
+                    "DummyClient",
+                    (),
+                    {
+                        "research": BrokenResearchClient(),
+                        "sources": type(
+                            "DummySources", (), {"list": lambda self, n: []}
+                        )(),
+                    },
+                )()
+
+            async def __aexit__(self, exc_type, exc_val, exc_tb):
+                pass
+
+        monkeypatch.setattr(
+            "podcaster.research.get_notebooklm_client", lambda _config: DummyClientCtx()
+        )
+
+        async def gen():
+            yield ResearchTask(
+                notebook_id="nb1",
+                source_id="src1",
+                task_id="t1",
+                topic="Topic",
+                summary="Summary",
+                suggested_duration="default",
+            )
+
+        async def run_test():
+            results = []
+            async for r in poll_research_jobs(
+                gen(),
+                NotebookLMConfig(),
+            ):
+                results.append(r)
+
+            assert len(results) == 1
+            assert results[0].status == TaskStatus.FAILED
+            assert "Permanent NotebookLM API error" in (results[0].error or "")
 
         asyncio.run(run_test())
 
