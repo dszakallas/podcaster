@@ -161,6 +161,16 @@ The project uses a **preset-based** configuration system for workflows, distribu
 - **ID3 Tagging Presets**: Defined under top-level `podcast_tags:` key as a preset dictionary mapping preset names
   (e.g. `default`) to `album_artist` and `artists`.
 
+## Skill Documentation
+
+`SKILL.md` documents the public interface of this project: CLI commands and options, workflow families and
+presets, recipe/configuration schemas, and file layouts.
+
+- **Keep `SKILL.md` in sync**: Whenever a public interface is changed, added, or removed (CLI commands,
+  options, or arguments; workflow steps or preset schema; configuration models; pipeline NDJSON schemas;
+  output file layouts), update `SKILL.md` in the same change. Do not merge or commit interface changes that
+  leave `SKILL.md` stale.
+
 ## Notebook Management
 
 - **Initializing Notebooks**: Notebooks are initialized via `uv run podcaster init-podcast-notebook`.
