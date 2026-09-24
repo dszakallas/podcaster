@@ -50,6 +50,7 @@ async def generate_cover_step(
     ):
         task_id: str | None = None
         image_gen_prompt: str | None = None
+        prev_failed_task_id: str | None = None
 
         async def record_created_job(created_task_id: str, prompt: str) -> None:
             nonlocal task_id, image_gen_prompt
@@ -70,15 +71,22 @@ async def generate_cover_step(
                         on_start_callback=record_created_job,
                     )
                 except Exception as e:
-                    if task_id is not None and attempts < retry_count:
+                    if attempts < retry_count:
                         attempts += 1
                         logger.warning(
                             "Cover job %s failed: %s. Retrying job (attempt %s/%s)...",
-                            task_id,
+                            task_id or "creation",
                             e,
                             attempts,
                             retry_count,
                         )
+                        if (
+                            isinstance(e, cover.CoverJobTerminalError)
+                            or prev_failed_task_id == task_id
+                        ):
+                            task_id = None
+                            image_gen_prompt = None
+                        prev_failed_task_id = task_id
                         await asyncio.sleep(2**attempts)
                         continue
                     raise

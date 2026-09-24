@@ -522,6 +522,62 @@ def test_generate_cover_step_reuses_created_job_when_retrying(dbos_session):
     asyncio.run(_test())
 
 
+def test_generate_cover_step_retries_fresh_job_on_terminal_error(dbos_session):
+    async def _test():
+        from podcaster.cover import CoverJobTerminalError
+
+        calls = []
+
+        async def fake_generate_cover(
+            notebook_id,
+            working_dir,
+            notebooklm_client,
+            model,
+            task_id=None,
+            image_gen_prompt=None,
+            on_start_callback=None,
+        ):
+            calls.append((task_id, image_gen_prompt))
+            if task_id is None and len(calls) == 1:
+                assert on_start_callback is not None
+                await on_start_callback("cover-job-1", "first prompt")
+                raise CoverJobTerminalError(
+                    "Cover generation failed to produce an image: finish_reason=NO_IMAGE"
+                )
+            return "podcasts/cover.jpg"
+
+        @asynccontextmanager
+        async def fake_notebooklm_client(_config):
+            yield object()
+
+        with (
+            patch(
+                "podcaster.workflows.common.cover.generate_cover_for_notebook",
+                side_effect=fake_generate_cover,
+            ),
+            patch(
+                "podcaster.workflows.common.get_notebooklm_client",
+                side_effect=fake_notebooklm_client,
+            ),
+            patch(
+                "podcaster.workflows.common.asyncio.sleep",
+                new_callable=AsyncMock,
+            ),
+        ):
+            result = await generate_cover_step(
+                "notebook-id",
+                "podcasts",
+                NotebookLMConfig(),
+                cover_spec=GenerateCoverSpecConfig(),
+                retry_count=1,
+            )
+
+        assert result == "podcasts/cover.jpg"
+        assert calls == [(None, None), (None, None)]
+
+    asyncio.run(_test())
+
+
 def test_generate_cover_step_passes_configured_model(dbos_session):
     async def _test():
         captured_model = []

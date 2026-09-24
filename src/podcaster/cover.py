@@ -19,10 +19,19 @@ logger = logging.getLogger(__name__)
 POLL_INTERVAL_SECONDS = 15.0
 MAX_POLL_TIMEOUT_SECONDS = 1800.0
 
+
+class CoverJobTerminalError(RuntimeError):
+    """Raised when a cover generation batch job has permanently failed or produced no image."""
+
+
 COVER_PROMPT_TEMPLATE = (
     "Based on this notebook summary, create a prompt for generating a podcast album cover. "
     "The title of the podcast is '{{ title }}'. Please ensure the prompt instructs the generator "
-    "to include the text '{{ title }}' clearly as the title on the cover. Summary: {{ summary }}. "
+    "to include the text '{{ title }}' clearly as the title on the cover. "
+    "Focus on symbolic, thematic, or conceptual visual metaphors (such as technology, abstract geometry, "
+    "objects, atmosphere, scenery). Avoid depictions of specific real people, recognizable politicians, "
+    "violence, or sensitive conflict to comply with image safety policies. "
+    "Summary: {{ summary }}. "
     "Generate ONLY one prompt, nothing else."
 )
 
@@ -56,7 +65,7 @@ async def create_cover_job(
 
     # Creating a batch is not idempotent, so retrying it after an uncertain
     # network failure could submit duplicate image-generation jobs.
-    batch_job: Any = await genai_client.batches.create(
+    batch_job: types.BatchJob = await genai_client.batches.create(
         model=model,
         src=[
             types.InlinedRequest(
@@ -74,7 +83,7 @@ async def create_cover_job(
 
     return CoverTask(
         notebook_id=notebook_id,
-        task_id=batch_job.name,
+        task_id=batch_job.name or "",
         image_gen_prompt=prompt_str,
         status=TaskStatus.PENDING,
     )
@@ -87,7 +96,7 @@ async def poll_cover_jobs(
 
     async def check_status(t: CoverTask) -> PollStatus:
         logger.debug(f"Polling batch job: {t.task_id}")
-        job: Any = await retry_rpc(
+        job: types.BatchJob = await retry_rpc(
             genai_client.batches.get, name=t.task_id, logger=logger
         )
         state_str = str(job.state)
@@ -108,6 +117,73 @@ async def poll_cover_jobs(
         yield t
 
 
+def _extract_cover_image_bytes(inlined_res: types.InlinedResponse) -> bytes:
+    if inlined_res.error:
+        raise CoverJobTerminalError(
+            f"Batch job inlined response error: {inlined_res.error}"
+        )
+
+    response = inlined_res.response
+    if not response:
+        raise CoverJobTerminalError(
+            f"Batch job inlined response has no response object (error: {inlined_res.error})"
+        )
+
+    if response.prompt_feedback and response.prompt_feedback.block_reason:
+        raise CoverJobTerminalError(
+            f"Cover generation prompt was blocked: {response.prompt_feedback.block_reason}"
+        )
+
+    if not response.candidates:
+        raise CoverJobTerminalError("Cover generation returned no candidates.")
+
+    candidate = response.candidates[0]
+    finish_reason = candidate.finish_reason
+    finish_message = candidate.finish_message
+
+    content = candidate.content
+    parts = content.parts if content else None
+    refusal_texts: list[str] = []
+    if parts:
+        for part in parts:
+            if part.inline_data and part.inline_data.data:
+                return part.inline_data.data
+            if part.text:
+                refusal_texts.append(part.text)
+
+    details: list[str] = []
+    if finish_reason:
+        details.append(f"finish_reason={finish_reason}")
+    if finish_message:
+        details.append(f"finish_message={finish_message}")
+    if refusal_texts:
+        details.append(f"refusal={' '.join(refusal_texts)}")
+    if not details:
+        details.append("no image data in response")
+    raise CoverJobTerminalError(
+        f"Cover generation failed to produce an image: {', '.join(details)}"
+    )
+
+
+def _save_cover_image(img_bytes: bytes, working_dir: str) -> str:
+    os.makedirs(working_dir, exist_ok=True)
+    cover_path = os.path.join(working_dir, "cover.jpg")
+
+    with open(cover_path, "wb") as f:
+        f.write(img_bytes)
+
+    try:
+        with Image.open(cover_path) as img:
+            img.verify()
+        logger.info(f"Verified cover image saved to: {cover_path}")
+    except Exception as e:
+        if os.path.exists(cover_path):
+            os.remove(cover_path)
+        raise CoverJobTerminalError(f"Generated cover image is invalid: {e}") from e
+
+    return cover_path
+
+
 async def download_cover_jobs(
     tasks: AsyncIterable[CoverTask], working_dir: str
 ) -> AsyncGenerator[CoverTask, None]:
@@ -121,37 +197,16 @@ async def download_cover_jobs(
             )
             continue
 
-        task_id = t.task_id
-
-        job: Any = await retry_rpc(
-            genai_client.batches.get, name=task_id, logger=logger
+        job: types.BatchJob = await retry_rpc(
+            genai_client.batches.get, name=t.task_id, logger=logger
         )
         if not job.dest or not job.dest.inlined_responses:
             raise RuntimeError(
                 "Batch job succeeded but no results found in inlined_responses."
             )
 
-        inlined_res = job.dest.inlined_responses[0]
-        if inlined_res.error:
-            raise RuntimeError(f"Batch job inlined response error: {inlined_res.error}")
-
-        img_bytes = inlined_res.response.candidates[0].content.parts[0].inline_data.data
-
-        os.makedirs(working_dir, exist_ok=True)
-        cover_path = os.path.join(working_dir, "cover.jpg")
-
-        with open(cover_path, "wb") as f:
-            f.write(img_bytes)
-
-        try:
-            with Image.open(cover_path) as img:
-                img.verify()
-            logger.info(f"Verified cover image saved to: {cover_path}")
-        except Exception as e:
-            if os.path.exists(cover_path):
-                os.remove(cover_path)
-            raise RuntimeError(f"Generated cover image is invalid: {e}") from e
-
+        img_bytes = _extract_cover_image_bytes(job.dest.inlined_responses[0])
+        cover_path = _save_cover_image(img_bytes, working_dir)
         yield t.model_copy(update={"cover_path": cover_path})
 
 
@@ -196,7 +251,7 @@ async def generate_cover_for_notebook(
         completed_task = t
 
     if not completed_task or completed_task.status != TaskStatus.COMPLETED:
-        raise RuntimeError(
+        raise CoverJobTerminalError(
             f"Cover generation failed: {completed_task.error if completed_task else 'Unknown error'}"
         )
 
