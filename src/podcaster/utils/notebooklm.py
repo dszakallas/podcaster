@@ -10,7 +10,7 @@ from typing import Any, Literal, cast, overload
 from notebooklm._artifacts import ArtifactsAPI
 from notebooklm._chat import ChatAPI
 from notebooklm._notebooks import NotebooksAPI
-from notebooklm._research import ResearchAPI
+from notebooklm._research import BaseResearchAPI
 from notebooklm._sources import SourcesAPI
 
 from ..config import NotebookLMConfig
@@ -80,7 +80,7 @@ class RetryingNotebookLMClient:
     notebooks: NotebooksAPI
     sources: SourcesAPI
     artifacts: ArtifactsAPI
-    research: ResearchAPI
+    research: BaseResearchAPI
     chat: ChatAPI
 
     @classmethod
@@ -119,7 +119,7 @@ class RetryingNotebookLMClient:
             )
         if hasattr(client, "research"):
             self.research = cast(
-                ResearchAPI,
+                BaseResearchAPI,
                 _RetryingResourceWrapper(client.research, logger=self._logger),
             )
         if hasattr(client, "chat"):
@@ -135,7 +135,7 @@ class RetryingNotebookLMClient:
     @overload
     def __getattr__(self, name: Literal["artifacts"]) -> ArtifactsAPI: ...
     @overload
-    def __getattr__(self, name: Literal["research"]) -> ResearchAPI: ...
+    def __getattr__(self, name: Literal["research"]) -> BaseResearchAPI: ...
     @overload
     def __getattr__(self, name: Literal["chat"]) -> ChatAPI: ...
     @overload
