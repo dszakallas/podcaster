@@ -59,6 +59,18 @@
                 hash = "sha256-qMszoeocNub0xIb/09CSy1JvKQYbIxhMQhIVlXmKe9I=";
               };
             };
+            dbos-python = lib'.agents.mkSkill pkgs {
+              name = "dbos-python";
+              version = "2026-10-01";
+              src = pkgs.fetchFromGitHub {
+                owner = "dbos-inc";
+                repo = "agent-skills";
+                rev = "4cf09dab16b03b8b39162561dcfd47febca4ae6e";
+                hash = "sha256-qqLd9WabvpCUvAe3UfAMWZ2YfHCrZgTw4BdVzXpo/ro=";
+              };
+              include = [ "dbos-python" ];
+            };
+            whobson-python-skills = bikeshed.packages.${pkgs.system}.agentskills.whobson-python-skills;
           };
         };
       }
