@@ -45,7 +45,7 @@ from podcaster.workflows.deep_dive_article.workflow import (
 )
 
 
-def test_process_single_audio_task_step_gcp_config_passed(dbos_session):
+def test_process_single_audio_task_step_gcp_config_passed(reset_dbos):
     async def _test():
         custom_gcp = GCPConfig(
             project_id="test-proj", gcs_bucket="test-bucket", location="us-central1"
@@ -142,7 +142,7 @@ def test_process_single_audio_task_step_gcp_config_passed(dbos_session):
     asyncio.run(_test())
 
 
-def test_tag_audio_artifact_step_uses_notebook_metadata(dbos_session):
+def test_tag_audio_artifact_step_uses_notebook_metadata(reset_dbos):
     async def _test():
         artifact = PodcastGenArtifact(
             notebook_id="test-nb",
@@ -236,7 +236,7 @@ def test_tag_artifacts_uses_explicit_metadata_track():
 
 
 def test_process_single_audio_task_step_fails_after_transcription_retries(
-    dbos_session,
+    reset_dbos,
 ):
     async def _test():
         task_info = PodcastGenTask(
@@ -315,7 +315,7 @@ def test_process_single_audio_task_step_fails_after_transcription_retries(
     asyncio.run(_test())
 
 
-def test_poll_audio_tasks_step_completes_in_order(dbos_session):
+def test_poll_audio_tasks_step_completes_in_order(reset_dbos):
     async def _test():
         task1 = PodcastGenTask(notebook_id="test-nb", task_id="task-1")
         task2 = PodcastGenTask(notebook_id="test-nb", task_id="task-2")
@@ -348,7 +348,7 @@ def test_poll_audio_tasks_step_completes_in_order(dbos_session):
     asyncio.run(_test())
 
 
-def test_poll_audio_tasks_step_raises_on_failure(dbos_session):
+def test_poll_audio_tasks_step_raises_on_failure(reset_dbos):
     async def _test():
         task1 = PodcastGenTask(notebook_id="test-nb", task_id="task-1")
 
@@ -375,7 +375,7 @@ def test_poll_audio_tasks_step_raises_on_failure(dbos_session):
     asyncio.run(_test())
 
 
-def test_process_audio_tasks_processes_all(dbos_session):
+def test_process_audio_tasks_processes_all(reset_dbos):
     async def _test():
         task1 = PodcastGenTask(
             notebook_id="test-nb",
@@ -434,7 +434,7 @@ def test_process_audio_tasks_processes_all(dbos_session):
     asyncio.run(_test())
 
 
-def test_transcription_step_does_not_retry_permanent_failure(dbos_session):
+def test_transcription_step_does_not_retry_permanent_failure(reset_dbos):
     async def _test():
         artifact = PodcastGenArtifact(
             notebook_id="test-nb",
@@ -470,7 +470,7 @@ def test_transcription_step_does_not_retry_permanent_failure(dbos_session):
     asyncio.run(_test())
 
 
-def test_generate_cover_step_reuses_created_job_when_retrying(dbos_session):
+def test_generate_cover_step_reuses_created_job_when_retrying(reset_dbos):
     async def _test():
         calls = []
 
@@ -522,7 +522,7 @@ def test_generate_cover_step_reuses_created_job_when_retrying(dbos_session):
     asyncio.run(_test())
 
 
-def test_generate_cover_step_retries_fresh_job_on_terminal_error(dbos_session):
+def test_generate_cover_step_retries_fresh_job_on_terminal_error(reset_dbos):
     async def _test():
         from podcaster.cover import CoverJobTerminalError
 
@@ -578,7 +578,7 @@ def test_generate_cover_step_retries_fresh_job_on_terminal_error(dbos_session):
     asyncio.run(_test())
 
 
-def test_generate_cover_step_passes_configured_model(dbos_session):
+def test_generate_cover_step_passes_configured_model(reset_dbos):
     async def _test():
         captured_model = []
 
@@ -623,7 +623,7 @@ def test_generate_cover_step_passes_configured_model(dbos_session):
 
 
 def test_deep_dive_workflow_runs_cover_and_enrichment_concurrently(
-    dbos_session, tmp_path
+    reset_dbos, tmp_path
 ):
     async def _test():
         cover_started = asyncio.Event()
@@ -700,7 +700,7 @@ def test_deep_dive_workflow_runs_cover_and_enrichment_concurrently(
     asyncio.run(_test())
 
 
-def test_deep_dive_workflow_processes_audio_tasks_concurrently(dbos_session, tmp_path):
+def test_deep_dive_workflow_processes_audio_tasks_concurrently(reset_dbos, tmp_path):
     async def _test():
         async def init_notebook(*args, **kwargs):
             return {

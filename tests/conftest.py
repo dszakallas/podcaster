@@ -1,29 +1,32 @@
 import contextlib
 from collections.abc import Generator
-from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pytest
 from dbos import DBOS, DBOSConfig
-from dbos._dbos import _get_dbos_instance
 
 
 @pytest.fixture(scope="session")
-def dbos_session(tmp_path_factory) -> Generator[None, None, None]:
-    """Explicit fixture for tests that require DBOS runtime with an isolated temporary SQLite database."""
+def _dbos_test_db_path(tmp_path_factory: pytest.TempPathFactory) -> Path:
     test_db_dir = tmp_path_factory.mktemp("dbos")
-    test_db = test_db_dir / "test_dbos.sqlite"
+    return test_db_dir / "test_dbos.sqlite"
 
+
+@pytest.fixture()
+def reset_dbos(_dbos_test_db_path: Path) -> Generator[None, None, None]:
+    """Provide a clean, isolated DBOS runtime for each test."""
     with contextlib.suppress(Exception):
         DBOS.destroy()
 
-    DBOS(
-        config=DBOSConfig(
-            name="podcaster",
-            system_database_url=f"sqlite:///{test_db}",
-            run_admin_server=False,
-            enable_otlp=False,
-        )
+    config = DBOSConfig(
+        name="podcaster",
+        application_version="0.1.0",
+        system_database_url=f"sqlite:///{_dbos_test_db_path}",
+        run_admin_server=False,
+        enable_otlp=False,
     )
+    DBOS(config=config)
+    DBOS.reset_system_database(truncate=True)
     DBOS.launch()
 
     yield
@@ -32,19 +35,5 @@ def dbos_session(tmp_path_factory) -> Generator[None, None, None]:
         DBOS.destroy()
 
 
-@pytest.fixture(autouse=True)
-def _reset_dbos_executor() -> Generator[None, None, None]:
-    """Reset DBOS's ThreadPoolExecutor after each test.
-
-    asyncio.run() shuts down whichever executor is set as the loop's default
-    executor when the loop closes. DBOS sets its own ThreadPoolExecutor as the
-    default executor via _configure_asyncio_thread_pool(), so after the first
-    asyncio.run() completes, that executor is dead. Setting _executor_field to
-    None lets DBOS lazily create a fresh one for the next test's event loop.
-    """
-    yield
-    with contextlib.suppress(Exception):
-        instance = _get_dbos_instance()
-        instance._executor_field = ThreadPoolExecutor(
-            thread_name_prefix="dbos-executor-"
-        )
+# Alias for backward compatibility with existing tests
+dbos_session = reset_dbos

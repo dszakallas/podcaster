@@ -80,7 +80,7 @@ def _sample_config() -> TopicWorkflowConfig:
     )
 
 
-def test_init_topic_notebook_step_calls_module(dbos_session):
+def test_init_topic_notebook_step_calls_module(reset_dbos):
     async def _test():
         with patch(
             "podcaster.workflows.topic_workflow.workflow.notebook_mod.init_topic_notebook",
@@ -103,7 +103,7 @@ def test_init_topic_notebook_step_calls_module(dbos_session):
     asyncio.run(_test())
 
 
-def test_enrich_topic_query_step_calls_module(dbos_session):
+def test_enrich_topic_query_step_calls_module(reset_dbos):
     async def _test():
         with patch(
             "podcaster.workflows.topic_workflow.workflow.research.research_from_query",
@@ -131,7 +131,7 @@ def test_enrich_topic_query_step_calls_module(dbos_session):
     asyncio.run(_test())
 
 
-def test_topic_workflow_runs_multi_podcasts(dbos_session):
+def test_topic_workflow_runs_multi_podcasts(reset_dbos):
     async def _test():
         recipe = _sample_recipe()
         wf_config = _sample_config()
@@ -319,7 +319,7 @@ def test_infer_recipe_from_prompt_parses_json():
     asyncio.run(_test())
 
 
-def test_topic_workflow_auto_length_uses_research_suggested_duration(dbos_session):
+def test_topic_workflow_auto_length_uses_research_suggested_duration(reset_dbos):
     async def _test():
         recipe = TopicWorkflowRecipe(
             title="Auto Length Test",
@@ -417,7 +417,7 @@ def test_topic_workflow_auto_length_uses_research_suggested_duration(dbos_sessio
     asyncio.run(_test())
 
 
-def test_topic_workflow_auto_length_uses_infer_step_when_no_research(dbos_session):
+def test_topic_workflow_auto_length_uses_infer_step_when_no_research(reset_dbos):
     async def _test():
         recipe = TopicWorkflowRecipe(
             title="Auto Length Inference",

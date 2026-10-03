@@ -220,7 +220,7 @@ def create_command(
         )
 
         try:
-            handle = dbos.DBOS.start_workflow(
+            handle = await dbos.DBOS.start_workflow_async(
                 topic_workflow,
                 preset_name=preset_name,
                 wf_config=workflow_config,

@@ -8,8 +8,7 @@ from collections.abc import AsyncGenerator, AsyncIterable
 from pathlib import Path
 from typing import Any
 
-from notebooklm import AudioFormat
-from notebooklm.rpc.types import AudioLength
+from notebooklm import AudioFormat, AudioLength
 
 from ..config import NotebookLMConfig, PodcastGenerationConfig
 from ..models import PodcastGenArtifact, PodcastGenTask, TaskStatus

@@ -222,3 +222,26 @@ async def test_retrying_client_attribute_delegation_and_lifecycle():
 
         mock_debug.assert_called_once()
         assert "Suppressed exception" in mock_debug.call_args[0][0]
+
+
+@pytest.mark.anyio
+async def test_retrying_client_from_storage_uses_client_config():
+    with patch("notebooklm.NotebookLMClient.from_storage") as mock_from_storage:
+        mock_cm = AsyncMock()
+        mock_client = MagicMock()
+        mock_cm.__aenter__.return_value = mock_client
+        mock_cm.__aexit__.return_value = None
+        mock_from_storage.return_value = mock_cm
+
+        async with RetryingNotebookLMClient.from_storage(
+            "/fake/path.json", timeout=60.0
+        ) as client:
+            assert isinstance(client, RetryingNotebookLMClient)
+
+        mock_from_storage.assert_called_once()
+        call_args, call_kwargs = mock_from_storage.call_args
+        assert call_args[0] == "/fake/path.json"
+        assert "config" in call_kwargs
+        assert "timeout" not in call_kwargs
+        config = call_kwargs["config"]
+        assert config.backend.transport.read_timeout == 60.0

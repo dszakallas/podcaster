@@ -133,7 +133,7 @@ def test_podcast_create_cli_normalizes_languages():
 
 
 @pytest.mark.anyio
-async def test_workflow_run_normalizes_languages(tmp_path, dbos_session):
+async def test_workflow_run_normalizes_languages(tmp_path, reset_dbos):
     with (
         patch(
             "podcaster.notebook.init_notebook", new_callable=AsyncMock

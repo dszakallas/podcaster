@@ -12,6 +12,12 @@ from notebooklm._chat import ChatAPI
 from notebooklm._notebooks import NotebooksAPI
 from notebooklm._research import BaseResearchAPI
 from notebooklm._sources import SourcesAPI
+from notebooklm.options import (
+    AndroidBackendConfig,
+    ClientConfig,
+    WebBackendConfig,
+    WebTransportOptions,
+)
 
 from ..config import NotebookLMConfig
 from .retry import retry_rpc
@@ -90,13 +96,26 @@ class RetryingNotebookLMClient:
         storage_path: str,
         timeout: float = DEFAULT_CLIENT_TIMEOUT,
         logger: logging.Logger | None = None,
+        config: ClientConfig | None = None,
     ) -> AsyncGenerator["RetryingNotebookLMClient", None]:
         """Create a retrying client from a NotebookLM storage state file."""
         from notebooklm import NotebookLMClient
 
-        async with NotebookLMClient.from_storage(
-            storage_path, timeout=timeout
-        ) as client:
+        if config is None:
+            backend = os.environ.get("NOTEBOOKLM_BACKEND", "web")
+            if backend == "android":
+                backend_config = AndroidBackendConfig(rpc_timeout=timeout)
+            else:
+                backend_config = WebBackendConfig(
+                    transport=WebTransportOptions(
+                        read_timeout=timeout,
+                        write_timeout=timeout,
+                        pool_timeout=timeout,
+                    )
+                )
+            config = ClientConfig(backend=backend_config)
+
+        async with NotebookLMClient.from_storage(storage_path, config=config) as client:
             yield cls(client, logger=logger)
 
     def __init__(self, client: Any, logger: logging.Logger | None = None):
@@ -167,9 +186,13 @@ async def get_notebooklm_client(
     config: NotebookLMConfig,
     timeout: float = DEFAULT_CLIENT_TIMEOUT,
     logger: logging.Logger | None = None,
+    client_config: ClientConfig | None = None,
 ) -> AsyncGenerator[RetryingNotebookLMClient, None]:
     """Create and close a retrying NotebookLM client."""
     async with RetryingNotebookLMClient.from_storage(
-        _get_storage_path(config), timeout=timeout, logger=logger
+        _get_storage_path(config),
+        timeout=timeout,
+        logger=logger,
+        config=client_config,
     ) as client:
         yield client

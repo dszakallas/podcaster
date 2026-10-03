@@ -4,8 +4,9 @@ import asyncio
 import io
 import json
 import logging
+from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import dbos
 import pytest
@@ -249,3 +250,124 @@ def test_workflow_list_uses_dbos_configuration() -> None:
 
     assert result.exit_code == 0
     initialize_dbos.assert_called_once_with(dbos_config)
+
+
+def test_deep_dive_article_cli_uses_start_workflow_async() -> None:
+    from podcaster.config import (
+        EnrichWebConfig,
+        GenerateCoverConfig,
+        ImporterConfig,
+        NativeImporterConfig,
+        PodcastGenerationConfig,
+        PodcastTagsConfig,
+        PodcastTranscriptionConfig,
+        TaggingConfig,
+        TranscribeConfig,
+    )
+    from podcaster.workflows.deep_dive_article.cli import create_command
+    from podcaster.workflows.deep_dive_article.config import DeepDiveArticleConfig
+
+    app_config = MagicMock()
+    app_config.workflow.workdir = "/tmp"
+    app_config.notebooklm = MagicMock()
+    app_config.gcp = MagicMock()
+
+    wf_config = DeepDiveArticleConfig(
+        type="deep_dive_article",
+        podcast_generator=PodcastGenerationConfig(),
+        importer=ImporterConfig(native=NativeImporterConfig()),
+        enrich_web=EnrichWebConfig(enable=False),
+        generate_cover=GenerateCoverConfig(enable=False),
+        transcribe=TranscribeConfig(
+            enable=False,
+            podcast_transcriber=PodcastTranscriptionConfig(),
+        ),
+        tagging=TaggingConfig(enable=False, spec=PodcastTagsConfig()),
+        distribute=[],
+    )
+    cmd = create_command("test_preset", app_config, wf_config)
+    handle = SimpleNamespace(workflow_id="wf-123")
+
+    with (
+        patch(
+            "dbos.DBOS.start_workflow_async",
+            new_callable=AsyncMock,
+            return_value=handle,
+        ) as start_async,
+        patch(
+            "podcaster.workflows.deep_dive_article.cli.wait_for_workflow_result",
+            new_callable=AsyncMock,
+            return_value={"status": "completed"},
+        ) as wait_res,
+        patch("podcaster.workflows.deep_dive_article.cli.shutdown_dbos") as shutdown,
+    ):
+        result = CliRunner().invoke(cmd, ["https://example.com/article"])
+
+    assert result.exit_code == 0
+    start_async.assert_awaited_once()
+    wait_res.assert_awaited_once_with("wf-123")
+    shutdown.assert_called_once()
+
+
+def test_topic_workflow_cli_uses_start_workflow_async(tmp_path: Path) -> None:
+    from podcaster.config import (
+        EnrichWebConfig,
+        GenerateCoverConfig,
+        PodcastGenerationConfig,
+        PodcastTagsConfig,
+        PodcastTranscriptionConfig,
+        TaggingConfig,
+        TranscribeConfig,
+    )
+    from podcaster.workflows.topic_workflow.cli import create_command
+    from podcaster.workflows.topic_workflow.config import TopicWorkflowConfig
+
+    recipe_file = tmp_path / "recipe.yaml"
+    recipe_file.write_text(
+        "title: Test Topic\n"
+        "research:\n"
+        "  query: Test Query\n"
+        "podcasts:\n"
+        "  - type: TopicDeepDive\n"
+        "    focus: Focus\n"
+    )
+
+    app_config = MagicMock()
+    app_config.workflow.workdir = "/tmp"
+    app_config.notebooklm = MagicMock()
+    app_config.gcp = MagicMock()
+
+    wf_config = TopicWorkflowConfig(
+        type="topic_workflow",
+        podcast_generator=PodcastGenerationConfig(),
+        enrich_web=EnrichWebConfig(enable=False),
+        generate_cover=GenerateCoverConfig(enable=False),
+        transcribe=TranscribeConfig(
+            enable=False,
+            podcast_transcriber=PodcastTranscriptionConfig(),
+        ),
+        tagging=TaggingConfig(enable=False, spec=PodcastTagsConfig()),
+        distribute=[],
+    )
+    cmd = create_command("test_preset", app_config, wf_config)
+    handle = SimpleNamespace(workflow_id="wf-456")
+
+    with (
+        patch(
+            "dbos.DBOS.start_workflow_async",
+            new_callable=AsyncMock,
+            return_value=handle,
+        ) as start_async,
+        patch(
+            "podcaster.workflows.topic_workflow.cli.wait_for_workflow_result",
+            new_callable=AsyncMock,
+            return_value={"status": "completed"},
+        ) as wait_res,
+        patch("podcaster.workflows.topic_workflow.cli.shutdown_dbos") as shutdown,
+    ):
+        result = CliRunner().invoke(cmd, ["--recipe", str(recipe_file)])
+
+    assert result.exit_code == 0
+    start_async.assert_awaited_once()
+    wait_res.assert_awaited_once_with("wf-456")
+    shutdown.assert_called_once()
