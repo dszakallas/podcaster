@@ -379,20 +379,36 @@ async def cancel_tasks(*tasks: asyncio.Future[Any] | None) -> None:
         await asyncio.gather(*running, return_exceptions=True)
 
 
+@DBOS.step()
+async def save_distribution_metadata_step(
+    working_dir: str,
+    dist_meta: WorkflowDistributionMetadata,
+) -> str:
+    """DBOS Step to persist workflow distribution metadata to disk."""
+    async with log_task(
+        "save_distribution_metadata_step",
+        logger,
+        working_dir=working_dir,
+    ):
+        os.makedirs(working_dir, exist_ok=True)
+        meta_file = os.path.join(working_dir, "metadata.json")
+        try:
+            with open(meta_file, "w", encoding="utf-8") as f:
+                f.write(dist_meta.model_dump_json(indent=2))
+        except Exception as e:
+            logger.warning("Failed to save metadata.json in %s: %s", working_dir, e)
+        return meta_file
+
+
 async def distribute_workflow_results(
     working_dir: str,
     dist_meta: WorkflowDistributionMetadata,
     distribute_configs: list[Any],
 ) -> None:
     """Persist distribution metadata and concurrently execute all configured distributions."""
-    wf_meta = dist_meta.model_dump()
-    meta_file = os.path.join(working_dir, "metadata.json")
-    try:
-        with open(meta_file, "w", encoding="utf-8") as f:
-            f.write(dist_meta.model_dump_json(indent=2))
-    except Exception as e:
-        logger.warning("Failed to save metadata.json in %s: %s", working_dir, e)
+    await save_distribution_metadata_step(working_dir, dist_meta)
 
+    wf_meta = dist_meta.model_dump()
     targets: list[DistributionConfig] = []
     for target in distribute_configs:
         if not isinstance(target, DistributionConfig):

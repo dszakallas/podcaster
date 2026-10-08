@@ -8,6 +8,7 @@ import pytest
 
 from podcaster import tagging
 from podcaster.config import (
+    DistributionConfig,
     EnrichWebConfig,
     GCPConfig,
     GenerateCoverConfig,
@@ -18,6 +19,7 @@ from podcaster.config import (
     PodcastGenerationConfig,
     PodcastTagsConfig,
     PodcastTranscriptionConfig,
+    RsyncDistributionConfig,
     TaggingConfig,
     TranscribeConfig,
 )
@@ -31,10 +33,12 @@ from podcaster.workflows.common import (
     AudioProcessingOptions,
     WorkflowEnvironment,
     WorkflowNotebookContext,
+    distribute_workflow_results,
     generate_cover_step,
     poll_audio_tasks_step,
     process_audio_tasks,
     process_single_audio_task_step,
+    save_distribution_metadata_step,
     tag_audio_artifact_step,
     transcribe_audio_artifact_step,
 )
@@ -42,6 +46,11 @@ from podcaster.workflows.deep_dive_article.config import DeepDiveArticleConfig
 from podcaster.workflows.deep_dive_article.workflow import (
     DeepDiveArticleOverrides,
     deep_dive_article_workflow,
+)
+from podcaster.workflows.notifications import (
+    DeepDiveArticleNotification,
+    NotebookDistributionMetadata,
+    WorkflowDistributionMetadata,
 )
 
 
@@ -772,5 +781,85 @@ def test_deep_dive_workflow_processes_audio_tasks_concurrently(reset_dbos, tmp_p
             )
 
         assert result["files"] == ["task-en.m4a", "task-fr.m4a"]
+
+    asyncio.run(_test())
+
+
+def test_save_distribution_metadata_step_persists_json(reset_dbos, tmp_path):
+    async def _test():
+        dist_meta = WorkflowDistributionMetadata(
+            id="wf-meta-test",
+            preset="default",
+            notebook=NotebookDistributionMetadata(
+                id="nb-1",
+                title="Test Title",
+                url="https://notebooklm.google.com/notebook/nb-1",
+                creation_date="2026-08-24",
+            ),
+            artifacts=[],
+            notification=DeepDiveArticleNotification(
+                preset="default",
+                title="Test Title",
+                notebook_url="https://notebooklm.google.com/notebook/nb-1",
+                languages=["en"],
+            ),
+        )
+
+        meta_path = await save_distribution_metadata_step(str(tmp_path), dist_meta)
+        assert meta_path == str(tmp_path / "metadata.json")
+        assert (tmp_path / "metadata.json").exists()
+        import json
+
+        data = json.loads((tmp_path / "metadata.json").read_text(encoding="utf-8"))
+        assert data["id"] == "wf-meta-test"
+        assert data["preset"] == "default"
+        assert data["notebook"]["id"] == "nb-1"
+
+    asyncio.run(_test())
+
+
+def test_distribute_workflow_results_invokes_metadata_step_and_distributions(
+    reset_dbos, tmp_path
+):
+    async def _test():
+        dist_meta = WorkflowDistributionMetadata(
+            id="wf-meta-test",
+            preset="default",
+            notebook=NotebookDistributionMetadata(
+                id="nb-1",
+                title="Test Title",
+                url="https://notebooklm.google.com/notebook/nb-1",
+                creation_date="2026-08-24",
+            ),
+            artifacts=[],
+            notification=DeepDiveArticleNotification(
+                preset="default",
+                title="Test Title",
+                notebook_url="https://notebooklm.google.com/notebook/nb-1",
+                languages=["en"],
+            ),
+        )
+        dist_config = DistributionConfig(
+            rsync=RsyncDistributionConfig(destination="remote:dest")
+        )
+
+        with (
+            patch(
+                "podcaster.workflows.common.save_distribution_metadata_step",
+                new_callable=AsyncMock,
+            ) as mock_save_step,
+            patch(
+                "podcaster.workflows.common.distribute_step",
+                new_callable=AsyncMock,
+            ) as mock_dist_step,
+        ):
+            await distribute_workflow_results(
+                working_dir=str(tmp_path),
+                dist_meta=dist_meta,
+                distribute_configs=[dist_config],
+            )
+
+        mock_save_step.assert_awaited_once_with(str(tmp_path), dist_meta)
+        mock_dist_step.assert_awaited_once()
 
     asyncio.run(_test())
