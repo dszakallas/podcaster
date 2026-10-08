@@ -442,9 +442,10 @@ async def topic_workflow(
     settings = _resolve_topic_workflow_settings(wf_config, preset_name, opts)
 
     # 1. Initialize Notebook with seed topic brief
+    topic_text = recipe.brief or recipe.research.query
     notebook_info = await init_topic_notebook_step(
         notebooklm_config=env.notebooklm_config,
-        topic=recipe.research.query,
+        topic=topic_text,
         title=recipe.title,
     )
 

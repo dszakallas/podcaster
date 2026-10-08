@@ -54,5 +54,6 @@ class TopicWorkflowRecipe(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     title: str | None = None
+    brief: str | None = None
     research: ResearchDescriptor
     podcasts: list[TopicGeneratorDescriptor] = Field(min_length=1)

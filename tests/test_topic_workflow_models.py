@@ -15,6 +15,7 @@ from podcaster.workflows.topic_workflow.models import (
 def test_recipe_validation_success():
     raw_yaml = """
 title: "The Future of Quantum Computing"
+brief: "Comprehensive brief about quantum computing"
 research:
   query: "Quantum error correction and practical hardware breakthroughs"
   mode: "deep"
@@ -40,6 +41,7 @@ podcasts:
     recipe = TopicWorkflowRecipe.model_validate(data)
 
     assert recipe.title == "The Future of Quantum Computing"
+    assert recipe.brief == "Comprehensive brief about quantum computing"
     assert (
         recipe.research.query
         == "Quantum error correction and practical hardware breakthroughs"

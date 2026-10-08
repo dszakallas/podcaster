@@ -99,6 +99,9 @@ def test_init_topic_notebook_step_calls_module(reset_dbos):
             )
             assert res["notebook_id"] == "nb-1"
             mock_init.assert_called_once()
+            _, kwargs = mock_init.call_args
+            assert kwargs["topic"] == "AI Frontiers"
+            assert kwargs["title"] == "AI Frontiers"
 
     asyncio.run(_test())
 
@@ -251,7 +254,10 @@ def test_topic_workflow_runs_multi_podcasts(reset_dbos):
 
 
 def test_infer_recipe_from_prompt_parses_json():
-    from podcaster.workflows.topic_workflow.cli import infer_recipe_from_prompt
+    from podcaster.workflows.topic_workflow.cli import (
+        RECIPE_INFERENCE_PROMPT,
+        infer_recipe_from_prompt,
+    )
 
     async def _test():
         raw_json_response = """```json
@@ -302,6 +308,7 @@ def test_infer_recipe_from_prompt_parses_json():
             )
 
         assert recipe.title == "State of AI 2026"
+        assert recipe.brief == "Test prompt"
         assert recipe.research.mode == "deep"
         assert len(recipe.podcasts) == 2
         assert isinstance(recipe.podcasts[0], TopicDeepDiveDescriptor)
@@ -314,6 +321,17 @@ def test_infer_recipe_from_prompt_parses_json():
             "Pro-regulation advocate",
             "Pro-innovation strategist",
         ]
+        mock_client.sources.add_text.assert_awaited_once_with(
+            "scratch-nb-123",
+            "User Prompt",
+            "Test prompt",
+            wait=True,
+        )
+        mock_client.chat.ask.assert_awaited_once_with(
+            "scratch-nb-123",
+            RECIPE_INFERENCE_PROMPT,
+            source_ids=["src-123"],
+        )
         mock_client.notebooks.delete.assert_awaited_once_with("scratch-nb-123")
 
     asyncio.run(_test())

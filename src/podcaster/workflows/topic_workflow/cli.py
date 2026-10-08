@@ -20,7 +20,7 @@ from .workflow import TopicWorkflowOverrides, topic_workflow
 
 logger = logging.getLogger(__name__)
 
-RECIPE_INFERENCE_PROMPT = """You are an expert podcast producer and researcher. Based on the user's prompt, generate a JSON recipe for a topic-driven podcast workflow.
+RECIPE_INFERENCE_PROMPT = """You are an expert podcast producer and researcher. Based on the user prompt in the attached source ("User Prompt"), generate a JSON recipe for a topic-driven podcast workflow.
 
 Output strictly valid JSON conforming to the following structure:
 {
@@ -49,33 +49,28 @@ Output strictly valid JSON conforming to the following structure:
 
 Instructions:
 1. Podcast Count and Coverage:
-   - Carefully read the prompt to identify all distinct podcasts requested.
-   - If the user asks for N podcasts (e.g. "Generate 3 podcasts: 1..., 2..., 3..."), the "podcasts" array MUST contain an entry for each requested podcast. Never combine or omit requested podcasts.
-   - For each podcast, infer the appropriate "type" using exactly one of these names:
-     * "TopicDeepDive": For overviews, deep dives, chronological summaries, comprehensive analyses, educational explorations, or single-perspective breakdowns.
-     * "TopicDebate": For debates, discussions between opposing viewpoints, policy clashes, or discussions between conflicting sides.
-     * "TopicArticle": For an in-depth interview with the author of a specific article, paper, or story discovered in the research.
+   - Identify all distinct podcasts requested in the source.
+   - If N podcasts are requested (e.g. "Generate 3 podcasts: 1..., 2..., 3..."), the "podcasts" array MUST contain an entry for each. Never combine or omit requested podcasts.
+   - For each podcast, infer the appropriate "type" using exactly one of:
+     * "TopicDeepDive": For overviews, deep dives, summaries, comprehensive analyses, or single-perspective breakdowns.
+     * "TopicDebate": For debates, opposing viewpoints, or policy clashes.
+     * "TopicArticle": For an interview with an author or expert on a specific article/story from the research.
 2. Roles:
-   - "roles": When specified, MUST be a list of exactly 2 strings describing the personas, stances, or perspectives of the two speakers.
-   - For "TopicDebate" episodes, "roles" is REQUIRED with two contrasting stances (e.g. ["Pro-regulation US policymaker concerned with safety guardrails", "Pro-development policymaker emphasizing competitiveness"]).
-   - For "TopicArticle" episodes, "roles" is optional/recommended (e.g. ["Tech Journalist", "Lead Author"]).
-   - For "TopicDeepDive" episodes, "roles" is optional (e.g. ["Senior Tech Host", "AI Specialist"]).
+   - "roles": When specified, MUST be a list of exactly 2 strings describing the personas/stances of the two speakers.
+   - For "TopicDebate", "roles" is REQUIRED with two contrasting stances (e.g. ["Pro-regulation policymaker", "Pro-development policymaker"]).
+   - For "TopicArticle", "roles" is optional/recommended (e.g. ["Tech Journalist", "Lead Author"]).
+   - For "TopicDeepDive", "roles" is optional (e.g. ["Senior Tech Host", "AI Specialist"]).
 3. Language Handling:
-   - DO NOT include the "languages" field unless the user explicitly requested specific languages in their prompt.
-   - When no language is explicitly requested by the user, omit "languages" entirely so that default system settings are used.
-   - If the user explicitly asks for specific languages (e.g. "in English and Czech", "German episode"), provide the corresponding ISO 639-1 language codes (e.g. ["en", "cs"], ["de"]) on that specific podcast entry.
+   - DO NOT include the "languages" field unless specific languages are explicitly requested.
+   - If languages are explicitly requested (e.g. "in English and Czech"), provide ISO 639-1 language codes (e.g. ["en", "cs"]) on each podcast entry.
 4. Length Handling:
-   - DO NOT include the "length" field unless the user explicitly requested a specific duration or length (e.g. "short", "long", "default").
-   - When not specified by the user, omit "length" entirely.
+   - DO NOT include the "length" field unless a specific duration or length is explicitly requested (e.g. "short", "long", "default").
 5. Research Query:
-   - Formulate a clear, effective web search query capturing the core subject, key entities, and themes.
-   - Default "mode" to "fast" unless the user explicitly requests deep, extensive, or comprehensive research.
+   - Formulate an effective web search query capturing the core subject, entities, and themes.
+   - Default "mode" to "fast" unless the user explicitly requests deep/extensive research (set to "deep").
 6. JSON Validity:
-   - ALL string values MUST be strictly valid JSON strings.
-   - Do NOT copy backslash sequences (e.g. \\$, \\%, \\&) from the user's prompt into JSON string values. Write the literal character instead (e.g. "$" not "\\$").
-   - The only valid JSON escape sequences inside strings are: \\", \\\\, \\/, \\b, \\f, \\n, \\r, \\t, \\uXXXX.
-
-Respond ONLY with the JSON object. Do not include markdown code fences, comments, or introductory text."""
+   - ALL string values MUST be valid JSON strings with literal characters (no unnecessary backslash escapes like \\$ or \\%).
+   - Respond ONLY with the JSON object. Do not include markdown code fences, comments, or extra text."""
 
 
 async def infer_recipe_from_prompt(
@@ -97,18 +92,20 @@ async def infer_recipe_from_prompt(
             )
 
             logger.info("Prompting NotebookLM for structured workflow recipe...")
-            chat_query = (
-                f'User request:\n"""\n{prompt}\n"""\n\n{RECIPE_INFERENCE_PROMPT}'
-            )
             chat_res = await client.chat.ask(
                 nb_id,
-                chat_query,
+                RECIPE_INFERENCE_PROMPT,
                 source_ids=[source.id],
             )
             raw_answer = chat_res.answer
 
             data = extract_json_payload(raw_answer)
-            return TopicWorkflowRecipe.model_validate(data)
+            recipe = TopicWorkflowRecipe.model_validate(data)
+            return recipe.model_copy(
+                update={
+                    "brief": recipe.brief or prompt,
+                }
+            )
         finally:
             logger.debug(f"Cleaning up scratch notebook {nb_id}...")
             try:
