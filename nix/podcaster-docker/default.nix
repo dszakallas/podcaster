@@ -35,7 +35,6 @@ let
   opencodeConfig = replaceVars ./opencode.json {
     playwrightMcpPath = "${playwright-mcp}/bin/playwright-mcp";
     playwrightBrowsersPath = "${playwright-browsers}";
-    anthropicSdkPath = "${ai-sdk-anthropic}/lib/node_modules/@ai-sdk/anthropic";
   };
 
   opencodeConfigDir = runCommand "opencode-config-dir" { } ''
@@ -46,11 +45,15 @@ let
   agentPaths =
     lib.optionals hasAgents [ playwright-mcp ]
     ++ lib.optionals hasOpencode [
+      ai-sdk-anthropic
       opencode
       opencodeConfigDir
     ];
 
-  agentEnvs = lib.optionals hasOpencode [ "OPENCODE_CONFIG=/etc/opencode.json" ];
+  agentEnvs = lib.optionals hasOpencode [
+    "OPENCODE_CONFIG=/etc/opencode.json"
+    "ANTHROPIC_SDK_PATH=${ai-sdk-anthropic}/lib/node_modules/@ai-sdk/anthropic"
+  ];
 in
 dockerTools.buildImage {
   inherit name;
