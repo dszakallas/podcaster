@@ -1,3 +1,5 @@
+"""Configuration models and schema resolution for Podcaster."""
+
 import contextlib
 import os
 import re

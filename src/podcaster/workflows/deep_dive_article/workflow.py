@@ -1,3 +1,5 @@
+"""Durable DBOS workflow for deep-dive article podcast generation."""
+
 import asyncio
 import logging
 import os

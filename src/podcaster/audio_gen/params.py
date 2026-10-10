@@ -1,3 +1,5 @@
+"""Audio generation input parameter models and task schemas."""
+
 from pydantic import BaseModel, ConfigDict, Field
 
 

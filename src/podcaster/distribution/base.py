@@ -1,3 +1,5 @@
+"""Abstract base classes and factories for artifact distribution."""
+
 import asyncio
 import logging
 from abc import ABC, abstractmethod

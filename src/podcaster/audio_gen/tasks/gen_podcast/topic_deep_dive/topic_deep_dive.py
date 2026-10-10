@@ -1,3 +1,5 @@
+"""Deep-dive podcast generation prompt and task inputs."""
+
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING

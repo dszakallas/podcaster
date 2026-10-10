@@ -1,3 +1,5 @@
+"""Audio file metadata tagging and MP4/ID3 tag operations."""
+
 import datetime
 import logging
 import os

@@ -1,3 +1,5 @@
+"""Author-focused podcast generation prompt and task inputs."""
+
 import asyncio
 import logging
 import re

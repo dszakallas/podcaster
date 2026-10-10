@@ -1,3 +1,5 @@
+"""Notification providers for distribution completions."""
+
 from .base import Notifier, build_notifier
 from .discord import DiscordNotifier
 from .plex import PlexNotifier

@@ -1,3 +1,5 @@
+"""Unit tests for podcaster.notebook."""
+
 import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 

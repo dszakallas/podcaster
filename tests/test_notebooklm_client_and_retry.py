@@ -1,3 +1,5 @@
+"""Unit tests for NotebookLM client retries and network error handling."""
+
 import logging
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch

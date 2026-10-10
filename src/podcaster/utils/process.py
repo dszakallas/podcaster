@@ -1,3 +1,5 @@
+"""Subprocess execution and lifecycle management utilities."""
+
 from __future__ import annotations
 
 import asyncio

@@ -1,3 +1,5 @@
+"""Domain models, task representations, and artifact schemas."""
+
 from __future__ import annotations
 
 from enum import StrEnum

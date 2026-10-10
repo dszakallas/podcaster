@@ -1,4 +1,4 @@
-"""Podcast-duration parsing and normalization."""
+"""Duration parsing and normalization."""
 
 import pytimeparse2
 

@@ -1,3 +1,5 @@
+"""Abstract base classes and registry for notification handlers."""
+
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import Callable

@@ -1,3 +1,5 @@
+"""Distribution targets and delivery handlers for podcast artifacts."""
+
 from .base import Distribution, build_distribution, execute_distribution
 from .rsync import RsyncDistribution
 

@@ -1,3 +1,5 @@
+"""Discord webhook notification handler."""
+
 import logging
 from typing import Any
 

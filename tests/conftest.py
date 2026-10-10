@@ -1,3 +1,5 @@
+"""Shared test fixtures and environment configuration."""
+
 import contextlib
 from collections.abc import Generator
 from pathlib import Path

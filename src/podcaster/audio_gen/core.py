@@ -1,3 +1,5 @@
+"""Core audio generation orchestration, polling, and artifact retrieval."""
+
 import asyncio
 import importlib
 import logging

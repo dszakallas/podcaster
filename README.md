@@ -1,6 +1,6 @@
 # Podcaster
 
-Automation tools for generating podcasts from articles and documents mostly using NotebookLM and `notebooklm-py`.
+Automation tools for generating podcasts from articles and documents using NotebookLM.
 
 ## Features
 
@@ -85,15 +85,6 @@ Podcaster reads `podcaster.yaml` from the current directory and validates it wit
 strict schema. Unknown keys are rejected. See
 [podcaster.example.yaml](podcaster.example.yaml) for the full configuration shape.
 
-Configuration is resolved in this order:
-
-1. Parse and validate `podcaster.yaml`.
-2. Resolve `ref` values to their named preset.
-3. Fill only unset fields annotated with `env_var: true` from the process environment.
-
-An explicit value in YAML always wins over an environment value. Podcaster does not
-load a `.env` file itself.
-
 ### Environment-backed configuration
 
 Environment names are derived from the configuration path by uppercasing it and
@@ -111,15 +102,17 @@ replacing dots with underscores. The following fields support environment defaul
 | `notifiers.<name>.discord.bot_token` | `DISCORD_BOT_TOKEN` |
 | `notifiers.<name>.discord.channel_id` | `DISCORD_CHANNEL_ID` |
 
-For named notifier presets, Podcaster prepends `NOTIFIERS_<NAME>_` to the
-unscoped variable and checks that scoped name first. `<NAME>` is the preset name
-uppercased, with non-alphanumeric runs replaced by one underscore. For example,
-the `daily news` preset checks
+For named configurations, Podcaster prepends `<TYPE>_<NAME>_` to the
+unscoped variable and checks that scoped name first. `TYPE` is the
+uppercased configuration type (e.g., `NOTIFIERS`), and `<NAME>` is
+the preset name uppercased, with non-alphanumeric runs replaced
+by one underscore. For example, the `daily news` preset checks
 `NOTIFIERS_DAILY_NEWS_DISCORD_WEBHOOK_URL` before
 `DISCORD_WEBHOOK_URL`.
 
 Inline notifier configurations have no preset name, so they use only the unscoped
 variables. Environment variables with an empty value are treated as unset.
+An explicit value in YAML always wins over an environment value.
 
 ### Environment Variables
 

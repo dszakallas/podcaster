@@ -1,3 +1,5 @@
+"""NotebookLM notebook lifecycle, source upload, and metadata management."""
+
 import logging
 
 from notebooklm.exceptions import NotebookNotFoundError

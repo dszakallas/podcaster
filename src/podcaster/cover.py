@@ -1,3 +1,5 @@
+"""Cover image generation and polling using Google Gemini/Imagen."""
+
 import asyncio
 import logging
 import os

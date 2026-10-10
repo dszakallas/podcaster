@@ -1,3 +1,5 @@
+"""Plex media server library notification and rescan handler."""
+
 import logging
 import os
 from typing import Any

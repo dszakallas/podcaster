@@ -1,3 +1,5 @@
+"""Audio transcription and synchronized LRC generation via Google Cloud Speech."""
+
 import asyncio
 import contextlib
 import logging
