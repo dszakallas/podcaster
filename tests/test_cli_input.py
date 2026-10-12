@@ -154,6 +154,117 @@ def test_workflow_resume_force_forks_incompatible_workflow() -> None:
     wait.assert_awaited_once_with("wf-fork")
 
 
+def test_find_resume_start_step() -> None:
+    from podcaster.cli.workflow import find_resume_start_step
+
+    assert find_resume_start_step([]) == 1
+    assert find_resume_start_step([{"function_id": 1}, {"function_id": 2}]) == 3
+    assert (
+        find_resume_start_step(
+            [
+                {"function_id": 1, "error": None},
+                {"function_id": 2, "error": RuntimeError("boom")},
+                {"function_id": 3, "error": None},
+            ]
+        )
+        == 2
+    )
+    assert (
+        find_resume_start_step(
+            [
+                {"function_id": 1, "error": None},
+                {"function_id": 2, "error": RuntimeError("boom 1")},
+                {"function_id": 3, "error": RuntimeError("boom 2")},
+            ]
+        )
+        == 2
+    )
+
+
+def test_workflow_resume_force_forks_from_failed_step() -> None:
+    dbos_config = object()
+    fork = SimpleNamespace(workflow_id="wf-fork")
+    with (
+        patch(
+            "podcaster.cli.workflow.load_config",
+            return_value=SimpleNamespace(dbos=dbos_config),
+        ),
+        patch("podcaster.cli.workflow.ensure_dbos_initialized"),
+        patch("podcaster.workflows.load_workflow_definitions"),
+        patch(
+            "dbos.DBOS.get_workflow_status_async",
+            new_callable=AsyncMock,
+            return_value=SimpleNamespace(app_version="previous"),
+        ),
+        patch.object(dbos.DBOS, "application_version", "current"),
+        patch(
+            "dbos.DBOS.list_workflow_steps_async",
+            new_callable=AsyncMock,
+            return_value=[
+                {"function_id": 14, "error": None},
+                {"function_id": 15, "error": RuntimeError("network error")},
+            ],
+        ),
+        patch(
+            "dbos.DBOS.fork_workflow_async",
+            new_callable=AsyncMock,
+            return_value=fork,
+        ) as fork_workflow,
+        patch(
+            "podcaster.cli.workflow.wait_for_workflow_result",
+            new_callable=AsyncMock,
+            return_value={"workflow_id": "wf-fork"},
+        ) as wait,
+        patch("podcaster.cli.workflow.shutdown_dbos"),
+    ):
+        result = CliRunner().invoke(cli, ["workflow", "resume", "--force", "wf-1"])
+
+    assert result.exit_code == 0
+    fork_workflow.assert_awaited_once_with("wf-1", 15, application_version="current")
+    wait.assert_awaited_once_with("wf-fork")
+
+
+def test_workflow_resume_rewinds_failed_workflow_matching_version() -> None:
+    dbos_config = object()
+    with (
+        patch(
+            "podcaster.cli.workflow.load_config",
+            return_value=SimpleNamespace(dbos=dbos_config),
+        ),
+        patch("podcaster.cli.workflow.ensure_dbos_initialized"),
+        patch("podcaster.workflows.load_workflow_definitions"),
+        patch(
+            "dbos.DBOS.get_workflow_status_async",
+            new_callable=AsyncMock,
+            return_value=SimpleNamespace(app_version="current", status="ERROR"),
+        ),
+        patch.object(dbos.DBOS, "application_version", "current"),
+        patch(
+            "dbos.DBOS.list_workflow_steps_async",
+            new_callable=AsyncMock,
+            return_value=[
+                {"function_id": 1, "error": None},
+                {"function_id": 2, "error": RuntimeError("step 2 failed")},
+            ],
+        ),
+        patch(
+            "dbos.DBOS.rewind_workflow_async",
+            new_callable=AsyncMock,
+        ) as rewind_workflow,
+        patch(
+            "podcaster.cli.workflow.wait_for_workflow_result",
+            new_callable=AsyncMock,
+            return_value={"workflow_id": "wf-1"},
+        ) as wait,
+        patch("podcaster.cli.workflow.shutdown_dbos"),
+    ):
+        result = CliRunner().invoke(cli, ["workflow", "resume", "wf-1"])
+
+    assert result.exit_code == 0
+    rewind_workflow.assert_awaited_once_with("wf-1", start_step=2)
+    wait.assert_awaited_once_with("wf-1")
+
+
 def test_workflow_status_reports_dbos_step_details() -> None:
     workflow_status = SimpleNamespace(
         workflow_id="wf-1",

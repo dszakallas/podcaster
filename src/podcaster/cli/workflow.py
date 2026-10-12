@@ -4,7 +4,7 @@ import functools
 import json
 import logging
 import sys
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import click
@@ -19,6 +19,29 @@ from podcaster.utils.dbos import (
 )
 
 from . import cli
+
+
+def find_resume_start_step(steps: Sequence[Any]) -> int:
+    """Find the step number where workflow execution should resume.
+
+    If any step failed (has an error), resumes from the earliest failed step
+    so it can be re-executed. If no steps failed, resumes from the next
+    unexecuted step (max completed step + 1).
+    """
+
+    def get_val(s: Any, key: str, default: Any = None) -> Any:
+        if isinstance(s, Mapping):
+            return s.get(key, default)
+        return getattr(s, key, default)
+
+    failed_steps = [
+        get_val(step, "function_id")
+        for step in steps
+        if get_val(step, "error") is not None
+    ]
+    if failed_steps:
+        return min(failed_steps)
+    return max((get_val(step, "function_id", 0) for step in steps), default=0) + 1
 
 
 @click.group()
@@ -122,10 +145,8 @@ async def resume_workflow(workflow_id, force):
                     current_version,
                 )
 
-            steps = await dbos.DBOS.list_workflow_steps_async(
-                workflow_id, load_output=False
-            )
-            start_step = max((step["function_id"] for step in steps), default=0) + 1
+            steps = await dbos.DBOS.list_workflow_steps_async(workflow_id)
+            start_step = find_resume_start_step(steps)
             handle = await dbos.DBOS.fork_workflow_async(
                 workflow_id,
                 start_step,
@@ -138,6 +159,20 @@ async def resume_workflow(workflow_id, force):
                 start_step,
             )
             return await wait_for_workflow_result(handle.workflow_id)
+
+        if getattr(workflow_status, "status", None) == "ERROR":
+            steps = await dbos.DBOS.list_workflow_steps_async(workflow_id)
+            start_step = find_resume_start_step(steps)
+            logger.info(
+                "Rewinding failed DBOS workflow %s from step %s",
+                workflow_id,
+                start_step,
+            )
+            await dbos.DBOS.rewind_workflow_async(
+                workflow_id,
+                start_step=start_step,
+            )
+            return await wait_for_workflow_result(workflow_id)
 
         logger.info("Resuming DBOS workflow: %s", workflow_id)
         await dbos.DBOS.resume_workflow_async(workflow_id)
