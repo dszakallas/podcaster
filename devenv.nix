@@ -17,7 +17,7 @@ in
     with pkgs;
     [
       git
-      python312
+      python313
       black
       ruff
       prek
@@ -61,7 +61,7 @@ in
   };
 
   languages.python.enable = true;
-  languages.python.package = pkgs.python312;
+  languages.python.package = pkgs.python313;
   languages.python.uv.enable = true;
   languages.python.uv.package = pkgs.uv;
   languages.python.uv.sync.enable = true;

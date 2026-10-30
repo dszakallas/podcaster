@@ -93,7 +93,7 @@ async def create_cover_job(
 
 async def poll_cover_jobs(
     tasks: AsyncIterable[CoverTask],
-) -> AsyncGenerator[CoverTask, None]:
+) -> AsyncGenerator[CoverTask]:
     genai_client = genai.Client().aio
 
     async def check_status(t: CoverTask) -> PollStatus:
@@ -188,7 +188,7 @@ def _save_cover_image(img_bytes: bytes, working_dir: str) -> str:
 
 async def download_cover_jobs(
     tasks: AsyncIterable[CoverTask], working_dir: str
-) -> AsyncGenerator[CoverTask, None]:
+) -> AsyncGenerator[CoverTask]:
 
     genai_client = genai.Client().aio
 

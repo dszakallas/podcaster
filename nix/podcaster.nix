@@ -3,7 +3,7 @@
   pyproject-nix,
   uv2nix,
   pyproject-build-systems,
-  python312,
+  python313,
 }:
 let
   workspace = uv2nix.lib.workspace.loadWorkspace {
@@ -17,8 +17,8 @@ let
 
   # Construct python set
   pythonSet =
-    (python312.pkgs.callPackage pyproject-nix.build.packages {
-      python = python312;
+    (python313.pkgs.callPackage pyproject-nix.build.packages {
+      python = python313;
     }).overrideScope
       (
         lib.composeManyExtensions [

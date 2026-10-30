@@ -105,7 +105,7 @@ async def tag_artifacts(
     *,
     tags_config: PodcastTagsConfig,
     total_tracks: int | None = None,
-) -> AsyncGenerator[PodcastGenArtifact, None]:
+) -> AsyncGenerator[PodcastGenArtifact]:
     default_album_artist = tags_config.album_artist
     default_artists = tags_config.artists
 

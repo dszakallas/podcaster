@@ -236,4 +236,3 @@ async def test_download_cover_jobs_success(tmp_path):
         assert len(results) == 1
         assert results[0].cover_path == str(tmp_path / "cover.jpg")
         assert (tmp_path / "cover.jpg").exists()
-

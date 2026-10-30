@@ -739,7 +739,7 @@ def _get_environment_value(
         if scoped_value:
             return scoped_value
     value = os.environ.get(env_var)
-    return value if value else None
+    return value or None
 
 
 def load_config() -> "AppConfig":

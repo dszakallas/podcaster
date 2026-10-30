@@ -73,7 +73,7 @@ async def create_podcast_audio_jobs(
     generator_config: PodcastGenerationConfig,
     notebooklm_config: NotebookLMConfig,
     dry_run: bool = False,
-) -> AsyncGenerator[PodcastGenTask, None]:
+) -> AsyncGenerator[PodcastGenTask]:
     type_name = type_name or generator_config.task
     merged_format_args = {**generator_config.format_args, **format_args}
 
@@ -330,7 +330,7 @@ async def _poll_single_task(
 async def poll_tasks(
     tasks: AsyncIterable[PodcastGenTask],
     notebooklm_config: NotebookLMConfig,
-) -> AsyncGenerator[PodcastGenTask, None]:
+) -> AsyncGenerator[PodcastGenTask]:
     async with get_notebooklm_client(notebooklm_config) as client:
         pending = set()
 
@@ -385,7 +385,7 @@ async def download_artifacts(
     artifacts: AsyncIterable[PodcastGenTask | PodcastGenArtifact],
     working_dir: str,
     notebooklm_config: NotebookLMConfig,
-) -> AsyncGenerator[PodcastGenArtifact, None]:
+) -> AsyncGenerator[PodcastGenArtifact]:
     os.makedirs(working_dir, exist_ok=True)
 
     async with get_notebooklm_client(notebooklm_config) as client:

@@ -114,7 +114,7 @@ class PollingJob[T]:
         *,
         concurrent: bool = False,
         update_task: Callable[[T, PollStatus], T] | None = None,
-    ) -> AsyncGenerator[T, None]:
+    ) -> AsyncGenerator[T]:
         """Polls an async stream of tasks and yields updated tasks upon completion."""
 
         def default_update(t: T, ps: PollStatus) -> T:

@@ -15,7 +15,7 @@ def _dbos_test_db_path(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 
 @pytest.fixture()
-def reset_dbos(_dbos_test_db_path: Path) -> Generator[None, None, None]:
+def reset_dbos(_dbos_test_db_path: Path) -> Generator[None]:
     """Provide a clean, isolated DBOS runtime for each test."""
     with contextlib.suppress(Exception):
         DBOS.destroy()
@@ -24,7 +24,6 @@ def reset_dbos(_dbos_test_db_path: Path) -> Generator[None, None, None]:
         name="podcaster",
         application_version="0.1.0",
         system_database_url=f"sqlite:///{_dbos_test_db_path}",
-        run_admin_server=False,
         enable_otlp=False,
     )
     DBOS(config=config)
