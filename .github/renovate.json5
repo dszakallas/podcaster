@@ -30,5 +30,10 @@
       matchUpdateTypes: ["minor", "patch"],
       addLabels: ["automerge"],
     },
+    {
+      description: ["Cap Python updates at supported version 3.13"],
+      matchPackageNames: ["python"],
+      allowedVersions: "<3.14",
+    },
   ],
 }
