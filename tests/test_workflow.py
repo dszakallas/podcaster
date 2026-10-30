@@ -116,6 +116,9 @@ def test_process_single_audio_task_step_gcp_config_passed(reset_dbos):
                 return_value=True,
             ),
             patch(
+                "podcaster.workflows.common.os.makedirs",
+            ),
+            patch(
                 "podcaster.workflows.common.audio_gen_core.poll_tasks",
                 side_effect=mock_poll,
             ),
@@ -124,7 +127,6 @@ def test_process_single_audio_task_step_gcp_config_passed(reset_dbos):
                 side_effect=mock_dl,
             ),
         ):
-
             context = WorkflowNotebookContext(
                 notebook_id="test-nb",
                 title="Test notebook",

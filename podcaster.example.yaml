@@ -221,6 +221,17 @@ notifiers:
     discord:
       # Sensitive field, better to use the DISCORD_WEBHOOK_URL or the NOTIFIERS_MY_DISCORD_DISCORD_WEBHOOK_URL environment variable
       webhook_url: "https://discord.com/api/webhooks/your-webhook-id/your-webhook-token"
+  my-jellyfin:
+    jellyfin:
+      # Base URL of the Jellyfin server
+      server_url: "http://localhost:8096"
+      # Library directory path on the Jellyfin server (triggers targeted /Library/Media/Updated scan)
+      server_library_path: "/media/podcasts"
+      # Optional: Specific item ID / library GUID to refresh (triggers /Items/{item_id}/Refresh)
+      # item_id: "your-library-item-id"
+      # Jellyfin API key or access token
+      # Sensitive field, better to use JELLYFIN_API_KEY, JELLYFIN_TOKEN, or NOTIFIERS_MY_JELLYFIN_JELLYFIN_API_KEY
+      api_key: "your-jellyfin-api-key"
 
 # Distribution target definitions (rsync, rclone)
 distributions:
@@ -231,6 +242,7 @@ distributions:
       flags: []
     notifiers:
       - ref: my-plex
+      - ref: my-jellyfin
       - ref: my-discord
 
 

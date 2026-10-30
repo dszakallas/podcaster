@@ -35,7 +35,7 @@ def register_notifier(key: str, factory: NotifierFactory) -> None:
 
 def _ensure_default_notifiers_registered() -> None:
     if not _NOTIFIER_REGISTRY:
-        from . import discord, plex  # noqa: F401
+        from . import discord, jellyfin, plex  # noqa: F401
 
 
 def build_notifier(

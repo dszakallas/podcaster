@@ -174,3 +174,29 @@ def test_generate_cover_spec_allows_custom_model():
 def test_generate_cover_spec_forbids_extra_fields():
     with pytest.raises(ValidationError, match="extra_forbidden"):
         GenerateCoverSpecConfig.model_validate({"extra_field": "invalid"})
+
+
+def test_jellyfin_notifier_reads_scoped_and_global_environment_variables(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tests.test_config import _base_config
+
+    config_data = _base_config()
+    config_data["notifiers"] = {
+        "jellyfin-target": {
+            "jellyfin": {},
+        }
+    }
+    monkeypatch.setenv(
+        "NOTIFIERS_JELLYFIN_TARGET_JELLYFIN_SERVER_URL", "http://scoped-jellyfin:8096"
+    )
+    monkeypatch.setenv("JELLYFIN_API_KEY", "global-api-key")
+    monkeypatch.setenv("JELLYFIN_SERVER_LIBRARY_PATH", "/media/podcasts")
+
+    config = resolve_refs(AppConfig.model_validate(config_data))
+    jellyfin = config.notifiers["jellyfin-target"].jellyfin
+
+    assert jellyfin is not None
+    assert jellyfin.server_url == "http://scoped-jellyfin:8096"
+    assert jellyfin.api_key == "global-api-key"
+    assert jellyfin.server_library_path == "/media/podcasts"
