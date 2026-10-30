@@ -21,7 +21,6 @@ Automation tools for generating podcasts from articles and documents using Noteb
 - **Python 3.12+** (managed via `uv` or `devenv` recommended)
 - **NotebookLM Authentication**: You must have `notebooklm-py` installed and authenticated.
 - **Google GenAI API Key**: Required for cover art generation (set as `GOOGLE_API_KEY`).
-- **Plex Server**: Required if using the Plex sync feature.
 
 ## Installation & Quick Start
 
