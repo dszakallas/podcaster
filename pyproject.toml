@@ -62,8 +62,8 @@ max-statements = 60
 include = ["src/podcaster", "tests"]
 typeCheckingMode = "standard"
 pythonVersion = "3.13"
-venvPath = "."
-venv = ".venv"
+venvPath = ".devenv/profiles/agents/state"
+venv = "venv"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
