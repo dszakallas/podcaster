@@ -248,10 +248,22 @@ class DiscordNotifierConfig(BaseModel):
     ] = None
 
 
+class JellyfinNotifierConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    server_library_path: Annotated[
+        str | None, Field(json_schema_extra={"env_var": True})
+    ] = None
+    server_url: Annotated[str | None, Field(json_schema_extra={"env_var": True})] = None
+    token: Annotated[str | None, Field(json_schema_extra={"env_var": True})] = None
+    api_key: Annotated[str | None, Field(json_schema_extra={"env_var": True})] = None
+    item_id: Annotated[str | None, Field(json_schema_extra={"env_var": True})] = None
+
+
 class NotifierConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     plex: PlexNotifierConfig | None = None
     discord: DiscordNotifierConfig | None = None
+    jellyfin: JellyfinNotifierConfig | None = None
 
 
 class DistributionConfig(BaseModel):

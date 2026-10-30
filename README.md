@@ -4,14 +4,14 @@ Automation tools for generating podcasts from articles and documents using Noteb
 
 ## Features
 
-- **Automated Workflows**: From a single source file to a Plex-ready podcast in one command.
+- **Automated Workflows**: From a single source file to a Plex- or Jellyfin-ready podcast in one command.
 - **Paywall Bypassing**: Optional fallback for scraping blocked sites using local agents and tools (experimental).
 - **Deep Research**: Enriches the notebook with web research related to your source material.
 - **AI Cover Art**: Generates custom 1:1 album covers using Gemini.
 - **Transcription**: Generates perfectly synchronized LRC lyrics (grouped into 2-second readable segments)
   using Google Cloud Speech-to-Text (Chirp 2).
 - **Rsync & Rclone Integration**: Automatically syncs final audio and lyric files to a destination server
-  (supporting both `rsync` and `rclone`), tags them, and triggers a library rescan in Plex.
+  (supporting both `rsync` and `rclone`), tags them, and triggers a library rescan in Plex or Jellyfin.
 - **Multi-lingual**: Support for generating podcasts in multiple languages.
 - **Streaming CLI Pipeline**: Uses asynchronous generators and NDJSON to allow real-time pipelining of tasks
   (`generate | poll | download | tag`).
@@ -97,6 +97,11 @@ replacing dots with underscores. The following fields support environment defaul
 | `notifiers.<name>.plex.server_library_path` | `PLEX_SERVER_LIBRARY_PATH` |
 | `notifiers.<name>.plex.server_url` | `PLEX_SERVER_URL` |
 | `notifiers.<name>.plex.token` | `PLEX_TOKEN` |
+| `notifiers.<name>.jellyfin.server_library_path` | `JELLYFIN_SERVER_LIBRARY_PATH` |
+| `notifiers.<name>.jellyfin.server_url` | `JELLYFIN_SERVER_URL` |
+| `notifiers.<name>.jellyfin.token` | `JELLYFIN_TOKEN` |
+| `notifiers.<name>.jellyfin.api_key` | `JELLYFIN_API_KEY` |
+| `notifiers.<name>.jellyfin.item_id` | `JELLYFIN_ITEM_ID` |
 | `notifiers.<name>.discord.webhook_url` | `DISCORD_WEBHOOK_URL` |
 | `notifiers.<name>.discord.bot_token` | `DISCORD_BOT_TOKEN` |
 | `notifiers.<name>.discord.channel_id` | `DISCORD_CHANNEL_ID` |

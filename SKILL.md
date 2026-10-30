@@ -3,13 +3,13 @@ name: podcast-generation
 description: >-
   Automated workflows for creating podcasts with NotebookLM and Gemini: article-driven deep dives and
   topic-driven podcasts (deep dives, debates, author interviews) with web research, AI cover art,
-  synchronized transcription, distribution, and Plex synchronization.
+  synchronized transcription, distribution, and media server synchronization (Plex, Jellyfin).
 ---
 
 # Podcast Generation Skill
 
 Use this skill to automate the creation of high-quality, research-enriched podcasts and sync them to a Plex
-media library. Two E2E workflow families are available:
+or Jellyfin media library. Two E2E workflow families are available:
 
 - **Article workflow** (`deep_dive_article`): starts from a source URL or file and produces a deep dive
   podcast about that article.
@@ -195,7 +195,7 @@ attached notifiers):
 podcaster distribute --workdir "${working_dir}" --preset my-media-server [--flag "--dry-run"]
 ```
 
-If a `metadata.json` exists in the working directory, it is passed to notifiers (Plex rescan, Discord).
+If a `metadata.json` exists in the working directory, it is passed to notifiers (Plex/Jellyfin rescan, Discord).
 
 ### Manual Notebook Initialization
 
@@ -248,6 +248,7 @@ Outputs NDJSON lines with `notebook_id`, `title`, and `local_dir` for locally av
   (`enable`/`spec`), and the `distribute` list. Top-level preset definitions are configured under `agents:`,
   `scrapers:`, `podcast_generators:`, `podcast_transcribers:`, `importers:`, `podcast_tags:`,
   `notifiers:`, and `distributions:`.
-- **Infrastructure**: Ensure `PLEX_SERVER_URL` and `PLEX_TOKEN` are in the environment for the Plex notifier.
+- **Infrastructure**: Ensure media server credentials (`PLEX_SERVER_URL`/`PLEX_TOKEN` or
+  `JELLYFIN_SERVER_URL`/`JELLYFIN_API_KEY`) are in the environment for notifiers.
 - **Storage**: Final podcasts are organized under the configured `workflow.workdir` (default `./podcasts/`),
   one directory per workflow run.
