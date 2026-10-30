@@ -3,7 +3,7 @@ name = "podcaster"
 version = "0.2.7"
 description = "Podcaster automation tools"
 readme = "README.md"
-requires-python = ">=3.12,<3.13"
+requires-python = ">=3.15,<3.16"
 dependencies = [
     "click>=8.4.1",
     "mutagen>=1.47.0",
