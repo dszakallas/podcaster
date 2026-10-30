@@ -22,11 +22,10 @@ def extract_json_payload(answer: str) -> dict[str, Any]:
     """Extract a dictionary from an LLM response, stripping markdown code fences if present."""
     text = answer.strip()
     if text.startswith("```json"):
-        text = text[7:]
+        text = text.removeprefix("```json")
     elif text.startswith("```"):
-        text = text[3:]
-    if text.endswith("```"):
-        text = text[:-3]
+        text = text.removeprefix("```")
+    text = text.removesuffix("```")
     parsed = json_repair.loads(text.strip())
     if not isinstance(parsed, dict):
         raise ValueError(f"Expected JSON object, got {type(parsed).__name__}")

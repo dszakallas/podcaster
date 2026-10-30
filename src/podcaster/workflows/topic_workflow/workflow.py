@@ -381,7 +381,7 @@ async def _distribute_topic_results(
         )
     )
     if not languages:
-        languages = generator_config.languages if generator_config.languages else ["en"]
+        languages = generator_config.languages or ["en"]
 
     podcast_lines = _build_topic_podcast_lines(recipe.podcasts, processed_artifacts)
 

@@ -11,7 +11,7 @@ from pydantic import BaseModel, ValidationError
 
 async def stream_stdin() -> AsyncIterator[Any]:
     """Helper to stream JSON objects from stdin."""
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     line_number = 0
     while True:
         line = await loop.run_in_executor(None, sys.stdin.readline)

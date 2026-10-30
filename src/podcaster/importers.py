@@ -104,9 +104,7 @@ async def _import_native(
         )
         return src_obj.id
 
-    clean_path = source
-    if clean_path.startswith("file://"):
-        clean_path = clean_path[7:]
+    clean_path = source.removeprefix("file://")
 
     if clean_path and os.path.isfile(clean_path):
         logger.debug(f"Native import: Local file {clean_path}")
@@ -317,7 +315,7 @@ class ChainImporter(Importer):
 
 def build_importer(importer_cfg: ImporterConfig) -> Importer:
     """Constructs a concrete Importer from a resolved ImporterConfig."""
-    match_rules = importer_cfg.match if importer_cfg.match else [".*"]
+    match_rules = importer_cfg.match or [".*"]
 
     if importer_cfg.native:
         return NativeImporter(

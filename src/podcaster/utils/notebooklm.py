@@ -97,7 +97,7 @@ class RetryingNotebookLMClient:
         timeout: float = DEFAULT_CLIENT_TIMEOUT,
         logger: logging.Logger | None = None,
         config: ClientConfig | None = None,
-    ) -> AsyncGenerator["RetryingNotebookLMClient", None]:
+    ) -> AsyncGenerator["RetryingNotebookLMClient"]:
         """Create a retrying client from a NotebookLM storage state file."""
         from notebooklm import NotebookLMClient
 
@@ -187,7 +187,7 @@ async def get_notebooklm_client(
     timeout: float = DEFAULT_CLIENT_TIMEOUT,
     logger: logging.Logger | None = None,
     client_config: ClientConfig | None = None,
-) -> AsyncGenerator[RetryingNotebookLMClient, None]:
+) -> AsyncGenerator[RetryingNotebookLMClient]:
     """Create and close a retrying NotebookLM client."""
     async with RetryingNotebookLMClient.from_storage(
         _get_storage_path(config),

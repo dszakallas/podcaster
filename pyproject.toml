@@ -3,7 +3,7 @@ name = "podcaster"
 version = "0.2.7"
 description = "Podcaster automation tools"
 readme = "README.md"
-requires-python = ">=3.12,<3.13"
+requires-python = ">=3.13,<3.14"
 dependencies = [
     "click>=8.4.1",
     "mutagen>=1.47.0",
@@ -17,7 +17,7 @@ dependencies = [
     "httpx",
     "google-cloud-speech",
     "google-cloud-storage",
-    "rookiepy>=0.5.6",  # Required for browser cookie extraction for NotebookLM authentication
+    "rookie-cookies>=0.6.0",  # Required for browser cookie extraction for NotebookLM authentication
     "dbos>=3.0.0",
     "pytimeparse2>=1.7.0",
     "langcodes>=3.5.0",
@@ -35,11 +35,11 @@ dev = [
 
 [tool.black]
 line-length = 88
-target-version = ["py312"]
+target-version = ["py313"]
 
 [tool.ruff]
 line-length = 88
-target-version = "py312"
+target-version = "py313"
 src = ["src"]
 
 [tool.ruff.lint]
@@ -61,9 +61,9 @@ max-statements = 60
 [tool.pyright]
 include = ["src/podcaster", "tests"]
 typeCheckingMode = "standard"
-pythonVersion = "3.12"
-venvPath = ".devenv/profiles/agents/state"
-venv = "venv"
+pythonVersion = "3.13"
+venvPath = "."
+venv = ".venv"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

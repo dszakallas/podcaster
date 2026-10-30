@@ -81,7 +81,7 @@ async def retry_rpc(
     **kwargs: Any,
 ) -> Any:
     """Retry a callable only when it raises a transient network exception."""
-    actual_jitter = jitter if jitter is not None else (delay if delay < 1.0 else 1.0)
+    actual_jitter = jitter if jitter is not None else min(1.0, delay)
 
     def _before_sleep(retry_state: RetryCallState) -> None:
         if logger:

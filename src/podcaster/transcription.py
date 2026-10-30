@@ -111,7 +111,7 @@ async def create_transcription_jobs(
     artifacts: AsyncIterable[PodcastGenArtifact],
     gcp_config: GCPConfig,
     transcription_config: PodcastTranscriptionConfig,
-) -> AsyncGenerator[TranscriptionTask, None]:
+) -> AsyncGenerator[TranscriptionTask]:
     speed_factor = transcription_config.speed_factor
     project_id = gcp_config.project_id
     location = gcp_config.location
@@ -225,7 +225,7 @@ async def create_transcription_jobs(
 async def poll_transcription_jobs(
     tasks: AsyncIterable[TranscriptionTask],
     gcp_config: GCPConfig,
-) -> AsyncGenerator[TranscriptionTask, None]:
+) -> AsyncGenerator[TranscriptionTask]:
     from google.api_core import operation as api_operation
     from google.longrunning import operations_pb2
 
@@ -266,7 +266,7 @@ async def poll_transcription_jobs(
 async def download_transcription_jobs(
     tasks: AsyncIterable[TranscriptionTask],
     gcp_config: GCPConfig,
-) -> AsyncGenerator[TranscriptionTask, None]:
+) -> AsyncGenerator[TranscriptionTask]:
     from google.api_core import operation as api_operation
     from google.longrunning import operations_pb2
 
@@ -362,7 +362,7 @@ async def transcribe_artifacts(
     artifacts: AsyncIterable[PodcastGenArtifact],
     gcp_config: GCPConfig,
     transcription_config: PodcastTranscriptionConfig,
-) -> AsyncGenerator[TranscriptionTask, None]:
+) -> AsyncGenerator[TranscriptionTask]:
     jobs = create_transcription_jobs(
         artifacts,
         gcp_config=gcp_config,

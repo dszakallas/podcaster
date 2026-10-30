@@ -418,7 +418,7 @@ async def poll_research_jobs(
     notebooklm_config: NotebookLMConfig,
     fallback_importer: ImporterConfig | None = None,
     max_import_failures: int | None = None,
-) -> AsyncGenerator[ResearchResult, None]:
+) -> AsyncGenerator[ResearchResult]:
     """Poll research jobs for completion and import discovered sources.
 
     Yields a ResearchResult per task. If a task fails or times out, its status is set
