@@ -7,7 +7,7 @@ requires-python = ">=3.12,<3.13"
 dependencies = [
     "click>=8.4.1",
     "mutagen>=1.47.0",
-    "notebooklm-py[browser]==0.8.3",
+    "notebooklm-py[browser]==0.8.6",
     "playwright>=1.50.0",  # Required for browser-based automation and Playwright MCP server
     "jinja2",
     "pydantic",
