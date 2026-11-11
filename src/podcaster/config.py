@@ -78,7 +78,7 @@ class Ref[T](BaseModel):
 
                 field_info = T_type.model_fields[name]
                 try:
-                    adapter = TypeAdapter(field_info.annotation)
+                    adapter = TypeAdapter(field_info.rebuild_annotation())
                     validated_extra[name] = adapter.validate_python(val)
                 except ValidationError as e:
                     for err in e.errors():
